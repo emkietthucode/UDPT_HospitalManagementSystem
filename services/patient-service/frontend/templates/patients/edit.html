@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+
+{% block title %}Chỉnh sửa Bệnh nhân{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header">
+                <h4 class="mb-0">
+                    <i class="fas fa-user-edit"></i> Chỉnh sửa Bệnh nhân
+                </h4>
+            </div>
+            <div class="card-body">
+                <form method="POST">
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="full_name" class="form-label">Họ và tên *</label>
+                            <input type="text" class="form-control" id="full_name" name="full_name" 
+                                   value="{{ patient.full_name }}" required>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="phone" class="form-label">Số điện thoại *</label>
+                            <input type="tel" class="form-control" id="phone" name="phone" 
+                                   value="{{ patient.phone }}" required>
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="email" class="form-label">Email *</label>
+                            <input type="email" class="form-control" id="email" name="email" 
+                                   value="{{ patient.email }}" required>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="date_of_birth" class="form-label">Ngày sinh</label>
+                            <input type="date" class="form-control" id="date_of_birth" name="date_of_birth" 
+                                   value="{{ patient.date_of_birth or '' }}">
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="gender" class="form-label">Giới tính</label>
+                            <select class="form-select" id="gender" name="gender">
+                                <option value="">-- Chọn giới tính --</option>
+                                <option value="Nam" {{ 'selected' if patient.gender == 'Nam' else '' }}>Nam</option>
+                                <option value="Nữ" {{ 'selected' if patient.gender == 'Nữ' else '' }}>Nữ</option>
+                                <option value="Khác" {{ 'selected' if patient.gender == 'Khác' else '' }}>Khác</option>
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="address" class="form-label">Địa chỉ</label>
+                        <textarea class="form-control" id="address" name="address" rows="3">{{ patient.address or '' }}</textarea>
+                    </div>
+                    
+                    <div class="d-grid gap-2 d-md-flex justify-content-md-end">
+                        <a href="{{ url_for('view_patient', patient_id=patient.id) }}" class="btn btn-secondary me-md-2">
+                            <i class="fas fa-times"></i> Hủy
+                        </a>
+                        <button type="submit" class="btn btn-primary">
+                            <i class="fas fa-save"></i> Cập nhật
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
