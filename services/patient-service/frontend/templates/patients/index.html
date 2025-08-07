@@ -79,16 +79,16 @@
                         <td>{{ patient.gender or '-' }}</td>
                         <td>{{ patient.created_at | datetime }}</td>
                         <td>
-                            <a href="{{ url_for('view_patient', patient_id=patient.id) }}" 
+                            <a href="{{ url_for('view_patient', patient_id=patient._id) }}" 
                                class="btn btn-info btn-sm btn-action" title="Xem chi tiết">
                                 <i class="fas fa-eye"></i>
                             </a>
-                            <a href="{{ url_for('edit_patient', patient_id=patient.id) }}" 
+                            <a href="{{ url_for('edit_patient', patient_id=patient._id) }}" 
                                class="btn btn-warning btn-sm btn-action" title="Chỉnh sửa">
                                 <i class="fas fa-edit"></i>
                             </a>
                             <button type="button" class="btn btn-danger btn-sm btn-action" 
-                                    title="Xóa" onclick="deletePatient('{{ patient.id }}', '{{ patient.full_name }}')">
+                                    title="Xóa" onclick="deletePatient('{{ patient._id }}', '{{ patient.full_name }}')">
                                 <i class="fas fa-trash"></i>
                             </button>
                         </td>

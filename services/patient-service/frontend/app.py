@@ -174,7 +174,7 @@ def new_patient():
     
     return render_template('patients/new.html')
 
-@app.route('/patients/<int:patient_id>')
+@app.route('/patients/<patient_id>')
 def view_patient(patient_id):
     """View patient details"""
     patient = patient_service.get_patient(patient_id)
@@ -184,7 +184,7 @@ def view_patient(patient_id):
     
     return render_template('patients/view.html', patient=patient)
 
-@app.route('/patients/<int:patient_id>/edit', methods=['GET', 'POST'])
+@app.route('/patients/<patient_id>/edit', methods=['GET', 'POST'])
 def edit_patient(patient_id):
     """Edit patient form"""
     patient = patient_service.get_patient(patient_id)
@@ -214,7 +214,7 @@ def edit_patient(patient_id):
     
     return render_template('patients/edit.html', patient=patient)
 
-@app.route('/patients/<int:patient_id>/delete', methods=['POST'])
+@app.route('/patients/<patient_id>/delete', methods=['POST'])
 def delete_patient(patient_id):
     """Delete patient"""
     if patient_service.delete_patient(patient_id):

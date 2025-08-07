@@ -1,23 +1,75 @@
-🔍-
-100%
-🔍+
-⚊
-◧
-🌙
-🔍
-📋 Document Outline
-Tài liệu Đặc tả Yêu cầu (SRS)
-1. Giới thiệu
-1.1. Mục đích
-1.2. Bối cảnh dự án
-1.3. Định nghĩa & Viết tắt
-2. Mô tả tổng quan
-2.1. Chức năng chính của hệ thống
-2.2. Tác nhân hệ thống
-3. Yêu cầu Chức năng (Functional Requirements)
-FR-1: Quản lý Bệnh nhân
-FR-2: Quản lý Lịch khám
-FR-3: Quản lý Khám bệnh & Chỉ định Dịch vụ
+# Hospital Management System
+
+Hệ thống quản lý bệnh viện với microservices architecture sử dụng FastAPI, Flask và MongoDB.
+
+## 🚀 Quick Start
+
+### Cách 1: Script tự động
+
+**MacOS/Linux:**
+```bash
+git clone <repository-url>
+cd UDPT_HospitalManagementSystem
+./quick-setup.sh
+```
+
+**Windows:**
+```bash
+git clone <repository-url>
+cd UDPT_HospitalManagementSystem
+quick-setup.bat
+```
+
+### Cách 2: Setup thủ công
+
+Xem hướng dẫn chi tiết tại: [SETUP_GUIDE.md](SETUP_GUIDE.md)
+
+## 🛠️ Tech Stack
+
+- **Backend:** FastAPI + Motor (MongoDB async driver)
+- **Frontend:** Flask + Jinja2 templates
+- **Database:** MongoDB Atlas
+- **Languages:** Python 3.9+
+
+## 📁 Project Structure
+
+```
+services/patient-service/
+├── backend/          # FastAPI API service
+├── frontend/         # Flask web interface
+└── run-all.py       # Script chạy cả 2 services
+```
+
+## 🌐 Access URLs
+
+- **Web Interface:** http://127.0.0.1:5000
+- **API Backend:** http://127.0.0.1:8001
+- **API Docs:** http://127.0.0.1:8001/docs
+
+## 📋 Features
+
+- ✅ Quản lý thông tin bệnh nhân
+- ✅ Tìm kiếm và lọc bệnh nhân
+- ✅ RESTful API
+- ✅ Responsive web interface
+- ✅ MongoDB Atlas integration
+
+## 🤝 Contributing
+
+1. Fork repository
+2. Tạo feature branch
+3. Commit changes
+4. Push to branch
+5. Create Pull Request
+
+## 📞 Support
+
+Nếu gặp vấn đề, xem [SETUP_GUIDE.md](SETUP_GUIDE.md) hoặc tạo issue.
+
+---
+
+## 📋 Original SRS Document Content
+
 FR-4: Quản lý Thanh toán & BHYT
 FR-5: Quản lý Đơn thuốc
 FR-6: Quản lý Thông báo

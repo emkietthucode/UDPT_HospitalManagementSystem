@@ -10,10 +10,18 @@ frontend_process = None
 
 def run_backend():
     global backend_process
-    print("🔧 Starting Backend Service...")
+    print("🔧 Starting Backend Service with MongoDB Atlas...")
+    
+    # Set MongoDB environment variable
+    os.environ["MONGODB_URL"] = "mongodb+srv://khoinguyen:UZXmjbTrfApU7gs5@khoinnguyen.zyjxbda.mongodb.net/hospital_management"
+    
     os.chdir("backend")
+    
+    # Use Python from virtual environment if it exists
+    python_path = "venv/bin/python3" if os.path.exists("venv/bin/python3") else sys.executable
+    
     backend_process = subprocess.Popen([
-        sys.executable, "-m", "uvicorn", "main:app", "--reload", "--port", "8001"
+        python_path, "-m", "uvicorn", "main:app", "--reload", "--port", "8001"
     ])
     os.chdir("..")
 
