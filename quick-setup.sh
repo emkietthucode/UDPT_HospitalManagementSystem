@@ -1,6 +1,28 @@
 #!/bin/bash
 
-# Quick Setup Script for Hospital Management Microservices System
+# Quick Setup Script # Create .env files with MongoDB connection
+echo "📝 Tạo file .env cho Patient Service..."
+cat > services/patient-service/backend/.env << EOF
+# MongoDB connection string - Replace with your actual MongoDB Atlas connection  
+MONGODB_URL=mongodb+srv://YOUR_USERNAME:YOUR_PASSWORD@YOUR_CLUSTER.mongodb.net/hospital_management
+
+# Service configuration
+PORT=8001
+HOST=0.0.0.0
+
+# Insurance Service URL
+INSURANCE_SERVICE_URL=http://localhost:8002
+EOFTạo file .env cho Insurance Service..."
+cat > services/insurance-service/.env << EOF
+# MongoDB connection string - Replace with your actual MongoDB Atlas connection
+MONGODB_URL=mongodb+srv://YOUR_USERNAME:YOUR_PASSWORD@YOUR_CLUSTER.mongodb.net/insurance_service_db
+
+# Service configuration
+PORT=8002
+HOST=0.0.0.0
+EOF
+
+echo "⚠️  QUAN TRỌNG: Cập nhật MongoDB connection string trong file .env"al Management Microservices System
 # Chạy script này để setup nhanh cho team
 
 echo "🏥 Hospital Management Microservices System - Quick Setup"
@@ -36,7 +58,7 @@ if [ ! -f ".env" ]; then
     cat > .env << EOF
 # Environment Configuration for Insurance Service
 # Separate database for Insurance Service in microservices architecture
-MONGODB_URL=mongodb+srv://khoinguyen:UZXmjbTrfApU7gs5@khoinnguyen.zyjxbda.mongodb.net/insurance_service_db
+MONGODB_URL=mongodb+srv://.../insurance_service_db
 
 # Optional: Service Configuration
 PORT=8002
@@ -60,7 +82,7 @@ fi
 echo "📦 Kích hoạt virtual environment và cài đặt dependencies..."
 source venv/bin/activate
 pip install --upgrade pip
-pip install -r requirements.txt
+pip install fastapi uvicorn motor pymongo python-dotenv httpx 'pydantic[email]'
 deactivate
 
 # Tạo file .env cho Patient Service nếu chưa có
@@ -68,7 +90,7 @@ if [ ! -f ".env" ]; then
     echo "📝 Tạo file .env cho Patient Service..."
     cat > .env << EOF
 # Environment Configuration for Patient Service
-MONGODB_URL=mongodb+srv://khoinguyen:UZXmjbTrfApU7gs5@khoinnguyen.zyjxbda.mongodb.net/hospital_management
+MONGODB_URL=mongodb+srv://.../hospital_management
 
 # Service Configuration
 PORT=8001
@@ -92,7 +114,7 @@ fi
 echo "📦 Kích hoạt virtual environment và cài đặt dependencies..."
 source venv/bin/activate
 pip install --upgrade pip
-pip install -r requirements.txt
+pip install flask requests python-dotenv
 deactivate
 
 cd ../../..
@@ -118,7 +140,7 @@ echo ""
 echo "📊 CÁC SERVICE SẼ CHẠY TẠI:"
 echo "   • Insurance Service API:  http://localhost:8002/docs"
 echo "   • Patient Service API:    http://localhost:8001/docs"
-echo "   • Web Application:        http://localhost:5000"
+echo "   • Web Application:        http://localhost:5001"
 echo ""
 echo "💾 KIẾN TRÚC DATABASE:"
 echo "   • Insurance Service:      insurance_service_db (MongoDB)"
@@ -126,7 +148,7 @@ echo "   • Patient Service:        hospital_management (MongoDB)"
 echo ""
 echo "📁 TỔ CHỨC MICROSERVICES:"
 echo "   ├── services/insurance-service/     (Port 8002)"
-echo "   ├── services/patient-service/       (Port 8001 + 5000)"
+echo "   ├── services/patient-service/       (Port 8001 + 5001)"
 echo "   └── start-all-services.sh          (Script chạy tất cả)"
 echo ""
 echo "🔍 KIỂM TRA TRẠNG THÁI:"
