@@ -1,10 +1,10 @@
 #!/bin/bash
 
-# Quick Setup Script for Hospital Management System
+# Quick Setup Script for Hospital Management Microservices System
 # Chạy script này để setup nhanh cho team
 
-echo "🏥 Hospital Management System - Quick Setup"
-echo "============================================="
+echo "🏥 Hospital Management Microservices System - Quick Setup"
+echo "=========================================================="
 
 # Kiểm tra Python
 if ! command -v python3 &> /dev/null; then
@@ -14,19 +14,13 @@ fi
 
 echo "✅ Python3 found: $(python3 --version)"
 
-# Tạo file .env nếu chưa có
-if [ ! -f "services/patient-service/backend/.env" ]; then
-    echo "📝 Tạo file .env..."
-    cp services/patient-service/backend/.env.example services/patient-service/backend/.env
-    echo "⚠️  Vui lòng cập nhật MONGODB_URL trong file services/patient-service/backend/.env"
-fi
-
-# Setup Backend
-echo "🔧 Setting up Backend..."
-cd services/patient-service/backend
+# Setup Insurance Service
+echo ""
+echo "🔧 Setting up Insurance Service..."
+cd services/insurance-service
 
 if [ ! -d "venv" ]; then
-    echo "📦 Tạo virtual environment cho Backend..."
+    echo "� Tạo virtual environment cho Insurance Service..."
     python3 -m venv venv
 fi
 
@@ -36,9 +30,57 @@ pip install --upgrade pip
 pip install -r requirements.txt
 deactivate
 
+# Tạo file .env cho Insurance Service nếu chưa có
+if [ ! -f ".env" ]; then
+    echo "📝 Tạo file .env cho Insurance Service..."
+    cat > .env << EOF
+# Environment Configuration for Insurance Service
+# Separate database for Insurance Service in microservices architecture
+MONGODB_URL=mongodb+srv://khoinguyen:UZXmjbTrfApU7gs5@khoinnguyen.zyjxbda.mongodb.net/insurance_service_db
+
+# Optional: Service Configuration
+PORT=8002
+DEBUG=True
+EOF
+    echo "✅ File .env đã được tạo cho Insurance Service"
+fi
+
+cd ../..
+
+# Setup Patient Service Backend
+echo ""
+echo "🔧 Setting up Patient Service Backend..."
+cd services/patient-service/backend
+
+if [ ! -d "venv" ]; then
+    echo "📦 Tạo virtual environment cho Patient Service Backend..."
+    python3 -m venv venv
+fi
+
+echo "📦 Kích hoạt virtual environment và cài đặt dependencies..."
+source venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+deactivate
+
+# Tạo file .env cho Patient Service nếu chưa có
+if [ ! -f ".env" ]; then
+    echo "📝 Tạo file .env cho Patient Service..."
+    cat > .env << EOF
+# Environment Configuration for Patient Service
+MONGODB_URL=mongodb+srv://khoinguyen:UZXmjbTrfApU7gs5@khoinnguyen.zyjxbda.mongodb.net/hospital_management
+
+# Service Configuration
+PORT=8001
+DEBUG=True
+EOF
+    echo "✅ File .env đã được tạo cho Patient Service"
+fi
+
 cd ../../..
 
 # Setup Frontend
+echo ""
 echo "🖥️  Setting up Frontend..."
 cd services/patient-service/frontend
 
@@ -55,14 +97,43 @@ deactivate
 
 cd ../../..
 
+# Make startup scripts executable
+echo ""
+echo "🔧 Setting up startup scripts..."
+chmod +x start-all-services.sh
+chmod +x stop-all-services.sh
+
 echo ""
 echo "🎉 Setup hoàn thành!"
 echo ""
-echo "📋 Bước tiếp theo:"
-echo "1. Cập nhật MONGODB_URL trong file: services/patient-service/backend/.env"
-echo "   Ví dụ: MONGODB_URL=mongodb+srv://username:password@cluster.mongodb.net/hospital_management"
-echo "2. Chạy ứng dụng: cd services/patient-service && python run-all.py"
-echo "3. Truy cập: http://127.0.0.1:5000"
+echo "� HƯỚNG DẪN CHẠY HỆ THỐNG:"
+echo "=========================================="
 echo ""
-echo "📚 Xem hướng dẫn nhanh: README_TEAM.md"
-echo "📋 Hướng dẫn chi tiết: SETUP_GUIDE.md"
+echo "1️⃣  CHẠY TẤT CẢ SERVICES:"
+echo "   ./start-all-services.sh"
+echo ""
+echo "2️⃣  DỪNG TẤT CẢ SERVICES:"
+echo "   ./stop-all-services.sh"
+echo ""
+echo "📊 CÁC SERVICE SẼ CHẠY TẠI:"
+echo "   • Insurance Service API:  http://localhost:8002/docs"
+echo "   • Patient Service API:    http://localhost:8001/docs"
+echo "   • Web Application:        http://localhost:5000"
+echo ""
+echo "💾 KIẾN TRÚC DATABASE:"
+echo "   • Insurance Service:      insurance_service_db (MongoDB)"
+echo "   • Patient Service:        hospital_management (MongoDB)"
+echo ""
+echo "📁 TỔ CHỨC MICROSERVICES:"
+echo "   ├── services/insurance-service/     (Port 8002)"
+echo "   ├── services/patient-service/       (Port 8001 + 5000)"
+echo "   └── start-all-services.sh          (Script chạy tất cả)"
+echo ""
+echo "🔍 KIỂM TRA TRẠNG THÁI:"
+echo "   curl http://localhost:8002/health   (Insurance Service)"
+echo "   curl http://localhost:8001/health   (Patient Service)"
+echo ""
+echo "📚 Tài liệu thêm:"
+echo "   • README_TEAM.md     - Hướng dẫn team"
+echo "   • SETUP_GUIDE.md     - Hướng dẫn chi tiết"
+echo "   • MICROSERVICES_GUIDE.md - Kiến trúc microservices"

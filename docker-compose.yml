@@ -1,29 +1,142 @@
 version: '3.8'
 
+networks:
+  hospital-network:
+    driver: bridge
+
 services:
-  postgres:
-    image: postgres:15
-    container_name: hospital_postgres
+  # Patient Service - Backend API
+  patient-backend:
+    build: 
+      context: ./services/patient-service/backend
+      dockerfile: Dockerfile
+    container_name: patient-backend
+    ports:
+      - "8001:8001"
     environment:
-      POSTGRES_DB: hospital_management
-      POSTGRES_USER: hospital_admin
-      POSTGRES_PASSWORD: hospital_password
+      - MONGODB_URL=${MONGODB_URL}
+      - INSURANCE_SERVICE_URL=http://insurance-service:8002
+    networks:
+      - hospital-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8001/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Insurance Service - BHYT Validation
+  insurance-service:
+    build:
+      context: ./services/insurance-service
+      dockerfile: Dockerfile
+    container_name: insurance-service
     ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - "8002:8002"
+    networks:
+      - hospital-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8002/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Patient Service - Frontend Web
+  patient-frontend:
+    build:
+      context: ./services/patient-service/frontend
+      dockerfile: Dockerfile
+    container_name: patient-frontend
+    ports:
+      - "5000:5000"
+    environment:
+      - PATIENT_SERVICE_URL=http://patient-backend:8001
+      - INSURANCE_SERVICE_URL=http://insurance-service:8002
+    depends_on:
+      patient-backend:
+        condition: service_healthy
+      insurance-service:
+        condition: service_healthy
+    networks:
+      - hospital-network
     restart: unless-stopped
 
-  redis:
-    image: redis:7-alpine
-    container_name: hospital_redis
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    restart: unless-stopped
+  # Future Services Templates (uncomment when ready):
+  
+  # API Gateway
+  # api-gateway:
+  #   build: ./services/api-gateway
+  #   container_name: api-gateway
+  #   ports:
+  #     - "8000:8000"
+  #   depends_on:
+  #     - patient-backend
+  #     - insurance-service
+  #   networks:
+  #     - hospital-network
 
+  # Doctor Service
+  # doctor-service:
+  #   build: ./services/doctor-service
+  #   container_name: doctor-service
+  #   ports:
+  #     - "8003:8003"
+  #   environment:
+  #     - MONGODB_URL=${MONGODB_URL}
+  #   networks:
+  #     - hospital-network
+
+  # Appointment Service  
+  # appointment-service:
+  #   build: ./services/appointment-service
+  #   container_name: appointment-service
+  #   ports:
+  #     - "8004:8004"
+  #   environment:
+  #     - MONGODB_URL=${MONGODB_URL}
+  #   networks:
+  #     - hospital-network
+
+  # Prescription Service
+  # prescription-service:
+  #   build: ./services/prescription-service
+  #   container_name: prescription-service
+  #   ports:
+  #     - "8005:8005"
+  #   environment:
+  #     - MONGODB_URL=${MONGODB_URL}
+  #   networks:
+  #     - hospital-network
+
+  # Notification Service (with RabbitMQ)
+  # notification-service:
+  #   build: ./services/notification-service
+  #   container_name: notification-service
+  #   ports:
+  #     - "8006:8006"
+  #   environment:
+  #     - RABBITMQ_URL=amqp://rabbitmq:5672
+  #   depends_on:
+  #     - rabbitmq
+  #   networks:
+  #     - hospital-network
+
+  # Message Queue (for async communication)
+  # rabbitmq:
+  #   image: rabbitmq:3-management
+  #   container_name: hospital_rabbitmq
+  #   ports:
+  #     - "5672:5672"
+  #     - "15672:15672"
+  #   environment:
+  #     - RABBITMQ_DEFAULT_USER=hospital
+  #     - RABBITMQ_DEFAULT_PASS=password
+  #   networks:
+  #     - hospital-network
+
+# Volumes for persistent data
 volumes:
-  postgres_data:
-  redis_data:
+  hospital_data:

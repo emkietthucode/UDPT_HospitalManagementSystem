@@ -56,6 +56,48 @@
                         <textarea class="form-control" id="address" name="address" rows="3">{{ patient.address or '' }}</textarea>
                     </div>
                     
+                    <!-- Insurance Information -->
+                    <div class="card mb-3">
+                        <div class="card-header">
+                            <h6 class="mb-0">
+                                <i class="fas fa-shield-alt"></i> Thông tin Bảo hiểm Y tế (BHYT)
+                                <small class="text-muted">- Tùy chọn</small>
+                            </h6>
+                        </div>
+                        <div class="card-body">
+                            <div class="mb-3">
+                                <label for="insurance_card_number" class="form-label">Số thẻ BHYT</label>
+                                <input type="text" class="form-control" id="insurance_card_number" name="insurance_card_number" 
+                                       value="{{ patient.insurance_info.card_number if patient.insurance_info else '' }}"
+                                       placeholder="Ví dụ: HS4010123456789" maxlength="15">
+                                <div class="form-text">
+                                    <i class="fas fa-info-circle"></i> 
+                                    Số thẻ BHYT gồm 15 ký tự (2 chữ cái + 13 số). Nếu có số thẻ, hệ thống sẽ tự động kiểm tra tính hợp lệ.
+                                </div>
+                            </div>
+                            
+                            {% if patient.insurance_info and patient.insurance_info.card_number %}
+                            <div class="alert alert-{{ 'success' if patient.insurance_info.is_validated else 'warning' }} alert-sm">
+                                <strong>Trạng thái xác thực:</strong>
+                                {% if patient.insurance_info.is_validated %}
+                                    <i class="fas fa-check-circle"></i> Đã xác thực
+                                    {% if patient.insurance_info.coverage_percentage %}
+                                        - Mức chi trả: {{ patient.insurance_info.coverage_percentage }}%
+                                    {% endif %}
+                                {% else %}
+                                    <i class="fas fa-exclamation-triangle"></i> Chưa xác thực
+                                {% endif %}
+                                {% if patient.insurance_info.validation_date %}
+                                    <br><small>Cập nhật: {{ patient.insurance_info.validation_date.strftime('%d/%m/%Y %H:%M') if patient.insurance_info.validation_date.strftime else patient.insurance_info.validation_date }}</small>
+                                {% endif %}
+                                {% if patient.insurance_info.notes %}
+                                    <br><small>{{ patient.insurance_info.notes }}</small>
+                                {% endif %}
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
+                    
                     <div class="d-grid gap-2 d-md-flex justify-content-md-end">
                         <a href="{{ url_for('view_patient', patient_id=patient.id) }}" class="btn btn-secondary me-md-2">
                             <i class="fas fa-times"></i> Hủy

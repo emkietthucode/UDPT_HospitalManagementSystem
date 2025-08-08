@@ -1,60 +1,80 @@
-# 🚀 Quick Start Guide - Team Setup
+# 🚀 Quick Start Guide - Hospital Management Microservices
 
-## Chỉ cần 3 bước đơn giản:
+## 🏗️ **Kiến trúc Microservices:**
 
-### 1️⃣ Pull code và chạy setup
-```bash
-git clone https://github.com/emkietthucode/UDPT_HospitalManagementSystem.git
-cd UDPT_HospitalManagementSystem
-./quick-setup.sh  # MacOS/Linux
-# hoặc quick-setup.bat  # Windows
+```
+Frontend (Web UI) ──┐
+                    ├──► Patient Service (8001)
+                    └──► Insurance Service (8002) ──► BHYT Validation
 ```
 
-### 2️⃣ Cấu hình MongoDB
-Mở file `services/patient-service/backend/.env` và cập nhật:
+## 🚀 **2 cách triển khai:**
+
+### **Option 1: Traditional Python (Đơn giản)**
+```bash
+git clone <repo-url>
+cd UDPT_HospitalManagementSystem
+./quick-setup.sh
+```
+
+### **Option 2: Microservices với Docker (Professional)**
+```bash
+git clone <repo-url>
+cd UDPT_HospitalManagementSystem
+./microservices-setup.sh
+```
+
+## ⚙️ **Cấu hình MongoDB:**
+Mở file `.env` và cập nhật:
 ```bash
 MONGODB_URL=mongodb+srv://your-username:your-password@your-cluster.mongodb.net/hospital_management
 ```
 
-**Lưu ý:** Thay `your-username`, `your-password`, `your-cluster` bằng thông tin MongoDB Atlas thật của team.
+## 🌐 **Truy cập Services:**
+- **Web UI:** http://localhost:5000
+- **Patient API:** http://localhost:8001/docs
+- **Insurance API:** http://localhost:8002/docs
 
-### 3️⃣ Chạy ứng dụng
-```bash
-cd services/patient-service
-python run-all.py
-```
+## 🧪 **Test BHYT với thẻ mẫu:**
+- **HS4010123456789** - Nguyễn Văn A (15/01/1990)
+- **HS4020987654321** - Khôi Nguyễn Đắc (20/05/1985)
 
-## ✅ Kiểm tra kết quả:
-- 🌐 **Website:** http://127.0.0.1:5000
-- 📡 **API:** http://127.0.0.1:8001/docs
+## 🎯 **Features:**
+- ✅ Quản lý bệnh nhân
+- ✅ Xác thực thẻ BHYT
+- ✅ Microservices architecture
+- ✅ Docker containerization
+- ✅ Service-to-service communication
 
 ---
 
-## 🆘 Nếu gặp lỗi:
+## 🆘 **Nếu gặp lỗi:**
 
-### MongoDB Connection Error:
+### **MongoDB Connection Error:**
 - Kiểm tra connection string trong `.env`
 - Đảm bảo IP được whitelist trong MongoDB Atlas
-- Kiểm tra username/password
 
-### Python/Pip Error:
+### **Docker Issues:**
 ```bash
-# Cài lại dependencies
+# Restart services
+docker compose down && docker compose up -d
+
+# Rebuild services
+docker compose up --build -d
+
+# Check logs
+docker compose logs -f
+```
+
+### **Python Issues (Traditional):**
+```bash
+# Reinstall dependencies
 cd services/patient-service/backend
-source venv/bin/activate  # MacOS/Linux
-# venv\Scripts\activate   # Windows
+source venv/bin/activate
 pip install -r requirements.txt --force-reinstall
 ```
 
-### Port đã được sử dụng:
-```bash
-# Tìm và kill process
-lsof -i :5000  # Frontend
-lsof -i :8001  # Backend
-kill -9 <PID>
-```
-
-## 📞 Cần hỗ trợ?
-- Xem hướng dẫn chi tiết: `SETUP_GUIDE.md`
+## 📞 **Cần hỗ trợ?**
+- Xem hướng dẫn chi tiết: `SETUP_GUIDE.md` | `DOCKER_GUIDE.md`
+- Microservices guide: `MICROSERVICES_GUIDE.md`
 - Tạo issue trong repository
-- Liên hệ team lead

@@ -4,10 +4,11 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import IndexModel, ASCENDING
 from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, date
 from bson import ObjectId
 import uvicorn
 import os
+import httpx
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -18,6 +19,9 @@ MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://localhost:27017/hospital_manag
 DATABASE_NAME = "hospital_management"
 COLLECTION_NAME = "patients"
 
+# Insurance Service Configuration
+INSURANCE_SERVICE_URL = os.getenv("INSURANCE_SERVICE_URL", "http://127.0.0.1:8002")
+
 # Global variables for database
 mongo_client: AsyncIOMotorClient = None
 database = None
@@ -26,7 +30,73 @@ database = None
 def str_object_id(v):
     return str(v) if isinstance(v, ObjectId) else v
 
+# Insurance validation function
+async def validate_insurance_card(card_number: str, date_of_birth: str):
+    """
+    Validate insurance card with Insurance Service
+    Returns: (is_valid, card_info, error_message)
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{INSURANCE_SERVICE_URL}/api/v1/insurance/validate",
+                json={
+                    "card_number": card_number,
+                    "date_of_birth": date_of_birth
+                },
+                timeout=10.0
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                return data.get("is_valid", False), data.get("card_info"), data.get("message", "")
+            else:
+                return False, None, f"Insurance service error: {response.status_code}"
+                
+    except httpx.RequestError as e:
+        return False, None, f"Failed to connect to insurance service: {str(e)}"
+    except Exception as e:
+        return False, None, f"Insurance validation error: {str(e)}"
+
+# Process insurance info for patient
+async def process_insurance_info(patient_data: dict, date_of_birth: str):
+    """
+    Process and validate insurance information for a patient
+    Updates the patient_data dict with validated insurance info
+    """
+    if not patient_data.get("insurance_info") or not patient_data["insurance_info"].get("card_number"):
+        return True, None  # No insurance info provided, which is okay
+    
+    card_number = patient_data["insurance_info"]["card_number"]
+    
+    # Validate with insurance service
+    is_valid, card_info, error_msg = await validate_insurance_card(
+        card_number, date_of_birth
+    )
+    
+    # Update insurance info
+    insurance_info = patient_data["insurance_info"]
+    insurance_info["is_validated"] = is_valid
+    insurance_info["validation_date"] = datetime.utcnow()
+    
+    if is_valid and card_info:
+        insurance_info["coverage_percentage"] = card_info.get("coverage_percentage")
+        insurance_info["notes"] = f"Validated successfully. Hospital level: {card_info.get('hospital_level', 'N/A')}"
+    else:
+        insurance_info["notes"] = f"Validation failed: {error_msg}"
+        # Note: We don't raise an error here since insurance is optional
+        # Just log the validation failure
+    
+    return True, error_msg if not is_valid else None
+
 # Pydantic Models
+class InsuranceInfo(BaseModel):
+    card_number: Optional[str] = None
+    is_validated: bool = False
+    validation_date: Optional[datetime] = None
+    coverage_percentage: Optional[int] = None
+    notes: Optional[str] = None
+
 class PatientBase(BaseModel):
     full_name: str
     phone: str
@@ -34,6 +104,7 @@ class PatientBase(BaseModel):
     address: Optional[str] = None
     date_of_birth: Optional[str] = None
     gender: Optional[str] = None
+    insurance_info: Optional[InsuranceInfo] = None
 
 class PatientCreate(PatientBase):
     pass
@@ -45,6 +116,13 @@ class PatientUpdate(BaseModel):
     address: Optional[str] = None
     date_of_birth: Optional[str] = None
     gender: Optional[str] = None
+    insurance_info: Optional[InsuranceInfo] = None
+
+class InsuranceValidationRequest(BaseModel):
+    patient_id: str
+    card_number: str
+    full_name: str
+    date_of_birth: str
 
 class PatientResponse(PatientBase):
     id: str = Field(alias="_id")
@@ -148,6 +226,24 @@ async def create_patient(db, patient: PatientCreate):
     
     # Create patient document
     patient_dict = patient.model_dump()
+    
+    # Process insurance information if provided
+    if patient_dict.get("insurance_info") and patient_dict["insurance_info"].get("card_number"):
+        if not patient_dict.get("date_of_birth"):
+            raise HTTPException(
+                status_code=400,
+                detail="Date of birth is required for insurance validation"
+            )
+        
+        # Validate insurance card
+        success, error_msg = await process_insurance_info(
+            patient_dict, 
+            patient_dict["date_of_birth"]
+        )
+        
+        # If insurance validation fails, we still create the patient but with failed validation status
+        # since insurance is optional
+    
     patient_dict["created_at"] = datetime.utcnow()
     patient_dict["updated_at"] = datetime.utcnow()
     
@@ -193,6 +289,29 @@ async def update_patient(db, patient_id: str, patient_update: PatientUpdate):
                 status_code=400,
                 detail="Email or phone number already exists"
             )
+    
+    # Process insurance information if provided
+    if 'insurance_info' in update_data and update_data['insurance_info'] and update_data['insurance_info'].get('card_number'):
+        # Get date of birth for validation
+        date_of_birth = update_data.get('date_of_birth', existing_patient.get('date_of_birth'))
+        
+        if not date_of_birth:
+            raise HTTPException(
+                status_code=400,
+                detail="Date of birth is required for insurance validation"
+            )
+        
+        # Create a copy for insurance processing
+        temp_data = {"insurance_info": update_data['insurance_info']}
+        
+        # Validate insurance card
+        success, error_msg = await process_insurance_info(
+            temp_data,
+            date_of_birth
+        )
+        
+        # Update the insurance info in update_data
+        update_data['insurance_info'] = temp_data['insurance_info']
     
     # Add updated timestamp
     update_data["updated_at"] = datetime.utcnow()
@@ -323,6 +442,72 @@ async def get_patients_count_endpoint(
     try:
         count = await get_patients_count(db, name, phone, email)
         return {"total": count}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/patients/{patient_id}/validate-insurance")
+async def validate_patient_insurance(
+    patient_id: str,
+    request: InsuranceValidationRequest,
+    db = Depends(get_db)
+):
+    """Validate patient's insurance card with Insurance Service"""
+    try:
+        # Get patient info
+        patient = await get_patient_by_id(db, patient_id)
+        if not patient:
+            raise HTTPException(status_code=404, detail="Patient not found")
+        
+        # Call Insurance Service
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.post(
+                    f"{INSURANCE_SERVICE_URL}/api/v1/insurance/validate",
+                    json={
+                        "card_number": request.card_number,
+                        "full_name": request.full_name,
+                        "date_of_birth": request.date_of_birth
+                    },
+                    timeout=10.0
+                )
+                
+                if response.status_code == 200:
+                    validation_result = response.json()
+                    
+                    # Update patient's insurance info
+                    insurance_info = {
+                        "card_number": request.card_number,
+                        "is_validated": validation_result["is_valid"],
+                        "validation_date": datetime.now(),
+                        "coverage_percentage": validation_result.get("coverage_percentage"),
+                        "notes": validation_result["message"]
+                    }
+                    
+                    # Update patient record
+                    await db[COLLECTION_NAME].update_one(
+                        {"_id": ObjectId(patient_id)},
+                        {"$set": {"insurance_info": insurance_info}}
+                    )
+                    
+                    return {
+                        "message": "Insurance validation completed",
+                        "validation_result": validation_result,
+                        "patient_updated": True
+                    }
+                else:
+                    raise HTTPException(
+                        status_code=response.status_code,
+                        detail="Insurance service error"
+                    )
+                    
+            except httpx.RequestError:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Insurance service unavailable"
+                )
+                
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

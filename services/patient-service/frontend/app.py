@@ -9,6 +9,33 @@ app.secret_key = 'your-secret-key-here'  # Change in production
 
 # Configuration
 PATIENT_SERVICE_URL = os.getenv('PATIENT_SERVICE_URL', 'http://127.0.0.1:8001')
+INSURANCE_SERVICE_URL = os.getenv('INSURANCE_SERVICE_URL', 'http://127.0.0.1:8002')
+
+class InsuranceService:
+    """Client for communicating with Insurance Service"""
+    
+    def __init__(self, base_url):
+        self.base_url = base_url
+    
+    def get_all_cards(self):
+        """Get all insurance cards"""
+        try:
+            response = requests.get(f"{self.base_url}/api/v1/insurance/cards")
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as e:
+            print(f"Error fetching insurance cards: {e}")
+            return []
+    
+    def get_stats(self):
+        """Get insurance statistics"""
+        try:
+            response = requests.get(f"{self.base_url}/api/v1/insurance/stats")
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as e:
+            print(f"Error fetching insurance stats: {e}")
+            return None
 
 class PatientService:
     """Client for communicating with Patient Service"""
@@ -98,9 +125,29 @@ class PatientService:
         except requests.RequestException as e:
             print(f"Error getting patient count: {e}")
             return 0
+    
+    def validate_insurance(self, patient_id, card_number, full_name, date_of_birth):
+        """Validate patient insurance"""
+        try:
+            data = {
+                "patient_id": patient_id,
+                "card_number": card_number,
+                "full_name": full_name,
+                "date_of_birth": date_of_birth
+            }
+            response = requests.post(
+                f"{self.base_url}/api/v1/patients/{patient_id}/validate-insurance",
+                json=data
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as e:
+            print(f"Error validating insurance: {e}")
+            return None
 
-# Initialize service client
+# Initialize service clients
 patient_service = PatientService(PATIENT_SERVICE_URL)
+insurance_service = InsuranceService(INSURANCE_SERVICE_URL)
 
 @app.route('/')
 def index():
@@ -160,8 +207,16 @@ def new_patient():
             'date_of_birth': request.form.get('date_of_birth'),
             'gender': request.form.get('gender')
         }
+        
+        # Handle insurance information
+        insurance_card_number = request.form.get('insurance_card_number')
+        if insurance_card_number and insurance_card_number.strip():
+            patient_data['insurance_info'] = {
+                'card_number': insurance_card_number.strip()
+            }
+        
         print('Raw patient data:', patient_data)
-        # Remove empty fields
+        # Remove empty fields (except insurance_info which has its own structure)
         patient_data = {k: v for k, v in patient_data.items() if v}
         
         result = patient_service.create_patient(patient_data)
@@ -202,8 +257,19 @@ def edit_patient(patient_id):
             'gender': request.form.get('gender')
         }
         
-        # Remove empty fields
-        patient_data = {k: v for k, v in patient_data.items() if v}
+        # Handle insurance information
+        insurance_card_number = request.form.get('insurance_card_number')
+        if insurance_card_number is not None:  # Field was submitted (even if empty)
+            if insurance_card_number.strip():
+                patient_data['insurance_info'] = {
+                    'card_number': insurance_card_number.strip()
+                }
+            else:
+                # Empty card number - clear insurance info
+                patient_data['insurance_info'] = None
+        
+        # Remove empty fields (except insurance_info which has its own structure)
+        patient_data = {k: v for k, v in patient_data.items() if v is not None}
         
         result = patient_service.update_patient(patient_id, patient_data)
         if result:
@@ -223,6 +289,52 @@ def delete_patient(patient_id):
         flash('Có lỗi xảy ra khi xóa bệnh nhân!', 'error')
     
     return redirect(url_for('index'))
+
+@app.route('/patients/<patient_id>/insurance', methods=['GET', 'POST'])
+def manage_insurance(patient_id):
+    """Manage patient insurance"""
+    patient = patient_service.get_patient(patient_id)
+    if not patient:
+        flash('Không tìm thấy bệnh nhân!', 'error')
+        return redirect(url_for('index'))
+    
+    if request.method == 'POST':
+        card_number = request.form.get('card_number')
+        full_name = request.form.get('full_name') or patient['full_name']
+        date_of_birth = request.form.get('date_of_birth') or patient['date_of_birth']
+        
+        if not card_number:
+            flash('Vui lòng nhập số thẻ BHYT!', 'error')
+        else:
+            result = patient_service.validate_insurance(
+                patient_id, card_number, full_name, date_of_birth
+            )
+            
+            if result:
+                validation_result = result.get('validation_result', {})
+                if validation_result.get('is_valid'):
+                    flash(f'✅ {validation_result["message"]}', 'success')
+                    if validation_result.get('coverage_percentage'):
+                        flash(f'Mức chi trả: {validation_result["coverage_percentage"]}%', 'info')
+                else:
+                    flash(f'❌ {validation_result["message"]}', 'error')
+                
+                # Refresh patient data to get updated insurance info
+                patient = patient_service.get_patient(patient_id)
+            else:
+                flash('Không thể kết nối với dịch vụ bảo hiểm!', 'error')
+    
+    return render_template('patients/insurance.html', patient=patient)
+
+@app.route('/admin/insurance')
+def admin_insurance():
+    """Admin page to view all insurance cards"""
+    cards = insurance_service.get_all_cards()
+    stats = insurance_service.get_stats()
+    
+    # Pass today's date to template for comparison
+    from datetime import date
+    return render_template('admin/insurance.html', cards=cards, stats=stats, today=date.today())
 
 # Error handlers
 @app.errorhandler(404)
@@ -245,5 +357,44 @@ def datetime_filter(value):
             return value
     return value
 
+@app.template_filter('parse_date')
+def parse_date_filter(value):
+    """Parse date string to date object for comparison"""
+    if isinstance(value, str):
+        try:
+            from datetime import date
+            # Handle ISO date format (YYYY-MM-DD)
+            return datetime.strptime(value, '%Y-%m-%d').date()
+        except:
+            return value
+    return value
+
+@app.template_filter('is_expired')
+def is_expired_filter(valid_to_str, today):
+    """Check if a date string represents an expired date"""
+    try:
+        from datetime import date
+        if isinstance(valid_to_str, str):
+            valid_to = datetime.strptime(valid_to_str, '%Y-%m-%d').date()
+        else:
+            valid_to = valid_to_str
+        return valid_to < today
+    except:
+        return False
+
+@app.template_filter('format_date')
+def format_date_filter(value):
+    """Format date string for display"""
+    if isinstance(value, str):
+        try:
+            # Handle ISO date format (YYYY-MM-DD)
+            date_obj = datetime.strptime(value, '%Y-%m-%d').date()
+            return date_obj.strftime('%d/%m/%Y')
+        except:
+            return value
+    elif hasattr(value, 'strftime'):
+        return value.strftime('%d/%m/%Y')
+    return value
+
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    app.run(debug=True, port=5001)

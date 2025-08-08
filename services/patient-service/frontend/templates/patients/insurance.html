@@ -1,0 +1,233 @@
+{% extends "base.html" %}
+
+{% block title %}Quản lý BHYT - {{ patient.full_name }}{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="row">
+        <div class="col-md-8">
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0">
+                        <i class="fas fa-id-card"></i> Quản lý Bảo hiểm Y tế
+                    </h5>
+                    <a href="{{ url_for('view_patient', patient_id=patient._id) }}" class="btn btn-secondary btn-sm">
+                        <i class="fas fa-arrow-left"></i> Quay lại
+                    </a>
+                </div>
+                <div class="card-body">
+                    <!-- Patient Info -->
+                    <div class="row mb-4">
+                        <div class="col-md-6">
+                            <h6><i class="fas fa-user"></i> Thông tin bệnh nhân</h6>
+                            <p class="mb-1"><strong>Họ tên:</strong> {{ patient.full_name }}</p>
+                            <p class="mb-1"><strong>Ngày sinh:</strong> {{ patient.date_of_birth or 'Chưa có' }}</p>
+                            <p class="mb-1"><strong>Điện thoại:</strong> {{ patient.phone }}</p>
+                        </div>
+                        
+                        <!-- Current Insurance Status -->
+                        <div class="col-md-6">
+                            <h6><i class="fas fa-shield-alt"></i> Trạng thái BHYT</h6>
+                            {% if patient.insurance_info %}
+                                {% if patient.insurance_info.is_validated %}
+                                    <div class="alert alert-success py-2">
+                                        <i class="fas fa-check-circle"></i> 
+                                        <strong>Đã xác thực</strong>
+                                        <br>
+                                        <small>Số thẻ: {{ patient.insurance_info.card_number }}</small>
+                                        {% if patient.insurance_info.coverage_percentage %}
+                                            <br><small>Mức chi trả: {{ patient.insurance_info.coverage_percentage }}%</small>
+                                        {% endif %}
+                                    </div>
+                                {% else %}
+                                    <div class="alert alert-warning py-2">
+                                        <i class="fas fa-exclamation-triangle"></i> 
+                                        <strong>Chưa hợp lệ</strong>
+                                        <br>
+                                        <small>{{ patient.insurance_info.notes or 'Cần xác thực lại' }}</small>
+                                    </div>
+                                {% endif %}
+                            {% else %}
+                                <div class="alert alert-info py-2">
+                                    <i class="fas fa-info-circle"></i> 
+                                    <strong>Chưa có thông tin BHYT</strong>
+                                </div>
+                            {% endif %}
+                        </div>
+                    </div>
+
+                    <hr>
+
+                    <!-- Insurance Validation Form -->
+                    <h6><i class="fas fa-search"></i> Xác thực thẻ BHYT</h6>
+                    <form method="POST" class="needs-validation" novalidate>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="form-group mb-3">
+                                    <label for="card_number">Số thẻ BHYT <span class="text-danger">*</span></label>
+                                    <input type="text" 
+                                           class="form-control" 
+                                           id="card_number" 
+                                           name="card_number" 
+                                           placeholder="Ví dụ: HS4010123456789"
+                                           value="{{ patient.insurance_info.card_number if patient.insurance_info else '' }}"
+                                           pattern="^[A-Z]{2}\d{13}$"
+                                           required>
+                                    <div class="invalid-feedback">
+                                        Số thẻ BHYT phải có định dạng: 2 chữ cái + 13 số
+                                    </div>
+                                    <small class="form-text text-muted">
+                                        Định dạng: 2 chữ cái + 13 số (ví dụ: HS4010123456789)
+                                    </small>
+                                </div>
+                            </div>
+                            
+                            <div class="col-md-6">
+                                <div class="form-group mb-3">
+                                    <label for="full_name">Họ tên trên thẻ</label>
+                                    <input type="text" 
+                                           class="form-control" 
+                                           id="full_name" 
+                                           name="full_name" 
+                                           value="{{ patient.full_name }}"
+                                           readonly>
+                                    <small class="form-text text-muted">
+                                        Sử dụng tên từ hồ sơ bệnh nhân
+                                    </small>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="form-group mb-3">
+                                    <label for="date_of_birth">Ngày sinh</label>
+                                    <input type="date" 
+                                           class="form-control" 
+                                           id="date_of_birth" 
+                                           name="date_of_birth" 
+                                           value="{{ patient.date_of_birth }}">
+                                    <small class="form-text text-muted">
+                                        Ngày sinh phải khớp với thẻ BHYT
+                                    </small>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <button type="submit" class="btn btn-primary">
+                                <i class="fas fa-check"></i> Xác thực thẻ BHYT
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <!-- Sidebar with Info -->
+        <div class="col-md-4">
+            <div class="card">
+                <div class="card-header">
+                    <h6 class="mb-0"><i class="fas fa-info-circle"></i> Hướng dẫn</h6>
+                </div>
+                <div class="card-body">
+                    <h6>Thẻ BHYT mẫu để test:</h6>
+                    <div class="alert alert-info py-2 mb-2">
+                        <strong>HS4010123456789</strong><br>
+                        <small>Nguyễn Văn A - 15/01/1990</small>
+                    </div>
+                    <div class="alert alert-info py-2 mb-2">
+                        <strong>HS4020987654321</strong><br>
+                        <small>Khôi Nguyễn Đắc - 20/05/1985</small>
+                    </div>
+                    <div class="alert alert-info py-2 mb-2">
+                        <strong>HS4031122334455</strong><br>
+                        <small>Trần Thị B - 10/08/1992</small>
+                    </div>
+                    <div class="alert alert-info py-2 mb-2">
+                        <strong>HS4045566778899</strong><br>
+                        <small>Lê Văn C - 25/12/1988</small>
+                    </div>
+                    <div class="alert alert-info py-2 mb-2">
+                        <strong>DN5010111222333</strong><br>
+                        <small>Phạm Thị D - 18/04/1995</small>
+                    </div>
+                    <div class="alert alert-warning py-2 mb-3">
+                        <strong>HS4099888777666</strong><br>
+                        <small>Ngô Văn G - 14/09/1980 (Hết hạn)</small>
+                    </div>
+                    
+                    <h6>Lưu ý:</h6>
+                    <ul class="small">
+                        <li>Số thẻ phải đúng định dạng 15 ký tự</li>
+                        <li>Họ tên phải khớp với thẻ BHYT</li>
+                        <li>Ngày sinh phải chính xác</li>
+                        <li>Hệ thống sẽ kiểm tra tính hợp lệ và hạn sử dụng</li>
+                        <li>Database có 8 thẻ mẫu từ nhiều tỉnh thành</li>
+                    </ul>
+                </div>
+            </div>
+
+            <!-- Insurance History -->
+            {% if patient.insurance_info and patient.insurance_info.validation_date %}
+            <div class="card mt-3">
+                <div class="card-header">
+                    <h6 class="mb-0"><i class="fas fa-history"></i> Lịch sử xác thực</h6>
+                </div>
+                <div class="card-body">
+                    <p class="small mb-1">
+                        <strong>Lần cuối:</strong> 
+                        {{ patient.insurance_info.validation_date | datetime }}
+                    </p>
+                    <p class="small mb-0">
+                        <strong>Kết quả:</strong> 
+                        <span class="badge badge-{{ 'success' if patient.insurance_info.is_validated else 'danger' }}">
+                            {{ 'Hợp lệ' if patient.insurance_info.is_validated else 'Không hợp lệ' }}
+                        </span>
+                    </p>
+                </div>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<script>
+// Form validation
+(function() {
+    'use strict';
+    window.addEventListener('load', function() {
+        var forms = document.getElementsByClassName('needs-validation');
+        var validation = Array.prototype.filter.call(forms, function(form) {
+            form.addEventListener('submit', function(event) {
+                if (form.checkValidity() === false) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                }
+                form.classList.add('was-validated');
+            }, false);
+        });
+    }, false);
+})();
+
+// Format card number input
+document.getElementById('card_number').addEventListener('input', function(e) {
+    // Convert to uppercase
+    this.value = this.value.toUpperCase();
+    
+    // Validate format
+    const pattern = /^[A-Z]{2}\d{13}$/;
+    const isValid = pattern.test(this.value);
+    
+    if (this.value.length > 0) {
+        if (isValid) {
+            this.classList.remove('is-invalid');
+            this.classList.add('is-valid');
+        } else {
+            this.classList.remove('is-valid');
+            this.classList.add('is-invalid');
+        }
+    }
+});
+</script>
+{% endblock %}
