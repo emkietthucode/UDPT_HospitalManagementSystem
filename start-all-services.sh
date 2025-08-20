@@ -69,7 +69,7 @@ check_port 8002
 check_port 5001
 
 # Set base directory
-BASE_DIR="/Users/adriannguyen/Desktop/DEV/HCMUS/UDPT/UDPT_HospitalManagementSystem"
+BASE_DIR="C:\Users\caoki\Downloads\VSCode\UDPT\UDPT_HospitalManagementSystem"
 PYTHON_PATH="$BASE_DIR/services/insurance-service/venv/lib/python3.13/site-packages"
 
 # Start Insurance Service (Port 8002)

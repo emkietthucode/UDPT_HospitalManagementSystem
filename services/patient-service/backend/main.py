@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import IndexModel, ASCENDING
 from pydantic import BaseModel, EmailStr, Field
-from typing import Optional, List
+from typing import Optional, List, Literal
 from datetime import datetime, date
 from bson import ObjectId
 import uvicorn
@@ -18,6 +18,10 @@ load_dotenv()
 MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://localhost:27017/hospital_management")
 DATABASE_NAME = "hospital_management"
 COLLECTION_NAME = "patients"
+
+# New collections for drug catalog and prescriptions
+DRUGS_COLLECTION = "drugs"
+PRESCRIPTIONS_COLLECTION = "prescriptions"
 
 # Insurance Service Configuration
 INSURANCE_SERVICE_URL = os.getenv("INSURANCE_SERVICE_URL", "http://127.0.0.1:8002")
@@ -131,6 +135,85 @@ class PatientResponse(PatientBase):
     
     model_config = {"populate_by_name": True}
 
+# -----------------------------
+# Drug (Thuốc) Models
+# -----------------------------
+
+class DrugBase(BaseModel):
+    drug_code: str = Field(..., description="Mã thuốc duy nhất của bệnh viện")
+    drug_name: str = Field(..., description="Tên thuốc")
+    dosage_form: Optional[str] = Field(None, description="Dạng bào chế, ví dụ: viên, ống, gói")
+    strength: Optional[str] = Field(None, description="Hàm lượng, ví dụ: 500mg, 5mg/ml")
+    unit: Optional[str] = Field(None, description="Đơn vị tính, ví dụ: viên, hộp")
+    route: Optional[str] = Field(None, description="Đường dùng, ví dụ: uống, tiêm, nhỏ")
+    price: Optional[float] = Field(None, ge=0, description="Đơn giá hiện hành")
+    is_active: bool = Field(default=True, description="Trạng thái đang sử dụng")
+
+class DrugCreate(DrugBase):
+    pass
+
+class DrugUpdate(BaseModel):
+    drug_name: Optional[str] = None
+    dosage_form: Optional[str] = None
+    strength: Optional[str] = None
+    unit: Optional[str] = None
+    route: Optional[str] = None
+    price: Optional[float] = Field(None, ge=0)
+    is_active: Optional[bool] = None
+
+class DrugResponse(DrugBase):
+    id: str = Field(alias="_id")
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"populate_by_name": True}
+
+# --------------------------------------
+# Prescription (Đơn thuốc) Models
+# --------------------------------------
+
+class PrescriptionItem(BaseModel):
+    drug_id: str = Field(..., description="ID thuốc (Mongo ObjectId dạng string)")
+    quantity: float = Field(..., gt=0, description="Số lượng")
+    dosage: Optional[str] = Field(None, description="Liều lượng, ví dụ: 500mg")
+    frequency: Optional[str] = Field(None, description="Tần suất dùng, ví dụ: 2 lần/ngày")
+    route: Optional[str] = Field(None, description="Đường dùng, ví dụ: uống")
+    instructions: Optional[str] = Field(None, description="Cách dùng chi tiết")
+
+class PrescriptionBase(BaseModel):
+    patient_id: str = Field(..., description="ID bệnh nhân (Mongo ObjectId dạng string)")
+    doctor_id: str = Field(..., description="ID bác sĩ (Mongo ObjectId dạng string hoặc mã nhân viên)")
+    diagnosis: Optional[str] = Field(None, description="Chẩn đoán")
+    notes: Optional[str] = Field(None, description="Ghi chú bổ sung")
+    status: Literal["draft", "issued", "dispensed", "canceled"] = Field(
+        default="draft", description="Trạng thái đơn thuốc"
+    )
+    items: List[PrescriptionItem] = Field(default_factory=list, description="Danh sách thuốc trong đơn")
+
+class PrescriptionCreate(PrescriptionBase):
+    prescribed_date: Optional[datetime] = Field(
+        default_factory=lambda: datetime.utcnow(), description="Ngày kê đơn"
+    )
+
+class PrescriptionUpdate(BaseModel):
+    doctor_id: Optional[str] = None
+    diagnosis: Optional[str] = None
+    notes: Optional[str] = None
+    status: Optional[Literal["draft", "issued", "dispensed", "canceled"]] = None
+    items: Optional[List[PrescriptionItem]] = None
+
+class PrescriptionResponse(PrescriptionBase):
+    id: str = Field(alias="_id")
+    prescribed_date: datetime
+    total_cost: Optional[float] = Field(None, ge=0)
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"populate_by_name": True}
+
+class PrescriptionStatusUpdate(BaseModel):
+    status: Literal["draft", "issued", "dispensed", "canceled"]
+
 # FastAPI App
 app = FastAPI(
     title="Patient Management Service",
@@ -161,6 +244,21 @@ async def startup_event():
         IndexModel([("full_name", ASCENDING)]),
     ])
 
+    # Create indexes for Drug catalog
+    await database[DRUGS_COLLECTION].create_indexes([
+        IndexModel([("drug_code", ASCENDING)], unique=True),
+        IndexModel([("drug_name", ASCENDING)]),
+        IndexModel([("is_active", ASCENDING)])
+    ])
+
+    # Create indexes for Prescriptions
+    await database[PRESCRIPTIONS_COLLECTION].create_indexes([
+        IndexModel([("patient_id", ASCENDING)]),
+        IndexModel([("doctor_id", ASCENDING)]),
+        IndexModel([("prescribed_date", ASCENDING)]),
+        IndexModel([("status", ASCENDING)])
+    ])
+
 @app.on_event("shutdown")
 async def shutdown_event():
     if mongo_client:
@@ -178,6 +276,13 @@ async def get_patient_by_id(db, patient_id: str):
         if result:
             result["_id"] = str(result["_id"])
         return result
+    except Exception:
+        return None
+
+def try_parse_object_id(id_str: str) -> Optional[ObjectId]:
+    """Safely parse a string to MongoDB ObjectId, return None if invalid"""
+    try:
+        return ObjectId(id_str)
     except Exception:
         return None
 
@@ -352,6 +457,35 @@ async def get_patients_count(
     count = await db[COLLECTION_NAME].count_documents(query)
     return count
 
+# --------------------------------------
+# Prescription helpers and creation logic
+# --------------------------------------
+
+async def get_drug_by_id(db, drug_id: str):
+    """Get a drug by id (only active)"""
+    object_id = try_parse_object_id(drug_id)
+    if object_id is None:
+        return None
+    drug = await db[DRUGS_COLLECTION].find_one({"_id": object_id, "is_active": True})
+    return drug
+
+def serialize_prescription(doc: dict) -> dict:
+    """Serialize prescription document to API response format"""
+    result = doc.copy()
+    result["_id"] = str(result["_id"]) if isinstance(result.get("_id"), ObjectId) else result.get("_id")
+    # patient_id may be stored as ObjectId
+    if isinstance(result.get("patient_id"), ObjectId):
+        result["patient_id"] = str(result["patient_id"])
+    # Normalize items drug_id to string
+    items = []
+    for item in result.get("items", []):
+        item_copy = item.copy()
+        if isinstance(item_copy.get("drug_id"), ObjectId):
+            item_copy["drug_id"] = str(item_copy["drug_id"])
+        items.append(item_copy)
+    result["items"] = items
+    return result
+
 # API Endpoints
 
 @app.get("/health")
@@ -510,6 +644,167 @@ async def validate_patient_insurance(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# ---------------------------------------------------------
+# New Endpoint: Create Prescription (POST /api/v1/prescriptions)
+# ---------------------------------------------------------
+
+@app.post("/api/v1/prescriptions", response_model=PrescriptionResponse)
+async def create_prescription_endpoint(prescription: PrescriptionCreate, db = Depends(get_db)):
+    """Create an electronic prescription after examination
+    Steps:
+    - Validate patient exists
+    - Validate each drug item exists and is active
+    - Compute total cost (sum of item.quantity * drug.price if price exists)
+    - Save prescription with timestamps
+    """
+    # Validate patient id
+    patient = await get_patient_by_id(db, prescription.patient_id)
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+
+    # Validate items and compute total cost
+    total_cost = 0.0
+    normalized_items = []
+    for idx, item in enumerate(prescription.items or []):
+        drug_doc = await get_drug_by_id(db, item.drug_id)
+        if not drug_doc:
+            raise HTTPException(status_code=400, detail=f"Drug not found or inactive at item #{idx+1}")
+
+        price = float(drug_doc.get("price", 0) or 0)
+        line_cost = price * float(item.quantity)
+        total_cost += line_cost
+
+        normalized_items.append({
+            "drug_id": ObjectId(item.drug_id),
+            "quantity": float(item.quantity),
+            "dosage": item.dosage,
+            "frequency": item.frequency,
+            "route": item.route or drug_doc.get("route"),
+            "instructions": item.instructions,
+            "unit_price": price,
+            "line_cost": line_cost,
+            "drug_snapshot": {
+                "drug_code": drug_doc.get("drug_code"),
+                "drug_name": drug_doc.get("drug_name"),
+                "strength": drug_doc.get("strength"),
+                "dosage_form": drug_doc.get("dosage_form"),
+                "unit": drug_doc.get("unit")
+            }
+        })
+
+    now = datetime.utcnow()
+    doc = {
+        "patient_id": ObjectId(prescription.patient_id),
+        "doctor_id": prescription.doctor_id,
+        "diagnosis": prescription.diagnosis,
+        "notes": prescription.notes,
+        "status": prescription.status,
+        "items": normalized_items,
+        "prescribed_date": prescription.prescribed_date or now,
+        "total_cost": round(total_cost, 2),
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    result = await db[PRESCRIPTIONS_COLLECTION].insert_one(doc)
+    created = await db[PRESCRIPTIONS_COLLECTION].find_one({"_id": result.inserted_id})
+    created_serialized = serialize_prescription(created)
+    # Align with response model keys
+    created_serialized["_id"] = str(created_serialized["_id"])  # ensure string
+    return created_serialized
+
+# ---------------------------------------------------------
+# New Endpoint: List Prescriptions by Status (GET)
+# ---------------------------------------------------------
+
+@app.get("/api/v1/prescriptions", response_model=List[PrescriptionResponse])
+async def list_prescriptions(
+    status: Optional[Literal["draft", "issued", "dispensed", "canceled"]] = Query(None, description="Lọc theo trạng thái đơn thuốc"),
+    patient_id: Optional[str] = Query(None, description="Lọc theo ID bệnh nhân"),
+    doctor_id: Optional[str] = Query(None, description="Lọc theo ID bác sĩ"),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    db = Depends(get_db)
+):
+    """List prescriptions for pharmacist view with optional filters by status/patient/doctor"""
+    query: dict = {}
+    if status:
+        query["status"] = status
+    if patient_id:
+        oid = try_parse_object_id(patient_id)
+        if oid is None:
+            raise HTTPException(status_code=400, detail="Invalid patient_id")
+        query["patient_id"] = oid
+    if doctor_id:
+        query["doctor_id"] = doctor_id
+
+    cursor = db[PRESCRIPTIONS_COLLECTION].find(query).sort("prescribed_date", -1).skip(skip).limit(limit)
+    results: List[dict] = []
+    async for doc in cursor:
+        results.append(serialize_prescription(doc))
+    return results
+
+@app.get("/api/v1/prescriptions/{prescription_id}", response_model=PrescriptionResponse)
+async def get_prescription_detail(prescription_id: str, db = Depends(get_db)):
+    """Get details of a specific prescription for doctor/pharmacist/patient view"""
+    oid = try_parse_object_id(prescription_id)
+    if oid is None:
+        raise HTTPException(status_code=400, detail="Invalid prescription id")
+
+    doc = await db[PRESCRIPTIONS_COLLECTION].find_one({"_id": oid})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Prescription not found")
+    return serialize_prescription(doc)
+
+@app.put("/api/v1/prescriptions/{prescription_id}/status", response_model=PrescriptionResponse)
+async def update_prescription_status(
+    prescription_id: str,
+    body: PrescriptionStatusUpdate,
+    db = Depends(get_db)
+):
+    """Update prescription status (for pharmacist)
+    Valid transitions (simple policy):
+    - draft -> issued | canceled
+    - issued -> dispensed | canceled
+    - dispensed -> (no further transitions)
+    - canceled -> (no further transitions)
+    """
+    oid = try_parse_object_id(prescription_id)
+    if oid is None:
+        raise HTTPException(status_code=400, detail="Invalid prescription id")
+
+    current = await db[PRESCRIPTIONS_COLLECTION].find_one({"_id": oid})
+    if not current:
+        raise HTTPException(status_code=404, detail="Prescription not found")
+
+    current_status = current.get("status", "draft")
+    target_status = body.status
+
+    allowed: dict = {
+        "draft": {"issued", "canceled"},
+        "issued": {"dispensed", "canceled"},
+        "dispensed": set(),
+        "canceled": set(),
+    }
+
+    if target_status == current_status:
+        return serialize_prescription(current)
+
+    if target_status not in allowed.get(current_status, set()):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid status transition: {current_status} -> {target_status}"
+        )
+
+    now = datetime.utcnow()
+    await db[PRESCRIPTIONS_COLLECTION].update_one(
+        {"_id": oid},
+        {"$set": {"status": target_status, "updated_at": now}}
+    )
+
+    updated = await db[PRESCRIPTIONS_COLLECTION].find_one({"_id": oid})
+    return serialize_prescription(updated)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8001)
