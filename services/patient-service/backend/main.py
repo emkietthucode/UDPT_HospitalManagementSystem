@@ -1,5 +1,6 @@
-from fastapi import FastAPI, HTTPException, Depends, Query
+from fastapi import FastAPI, HTTPException, Depends, Query, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import IndexModel, ASCENDING
 from pydantic import BaseModel, EmailStr, Field
@@ -10,6 +11,9 @@ import uvicorn
 import os
 import httpx
 from dotenv import load_dotenv
+from passlib.context import CryptContext
+from jose import JWTError, jwt
+import secrets
 
 # Load environment variables
 load_dotenv()
@@ -18,6 +22,7 @@ load_dotenv()
 MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://localhost:27017/hospital_management")
 DATABASE_NAME = "hospital_management"
 COLLECTION_NAME = "patients"
+USERS_COLLECTION_NAME = "users"
 
 # New collections for drug catalog and prescriptions
 DRUGS_COLLECTION = "drugs"
@@ -25,6 +30,15 @@ PRESCRIPTIONS_COLLECTION = "prescriptions"
 
 # Insurance Service Configuration
 INSURANCE_SERVICE_URL = os.getenv("INSURANCE_SERVICE_URL", "http://127.0.0.1:8002")
+
+# Authentication Configuration
+SECRET_KEY = os.getenv("SECRET_KEY", secrets.token_urlsafe(32))
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+# Password hashing
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+security = HTTPBearer()
 
 # Global variables for database
 mongo_client: AsyncIOMotorClient = None
@@ -92,6 +106,88 @@ async def process_insurance_info(patient_data: dict, date_of_birth: str):
         # Just log the validation failure
     
     return True, error_msg if not is_valid else None
+
+# Authentication Functions
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify a plain password against its hash"""
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password: str) -> str:
+    """Hash a password"""
+    return pwd_context.hash(password)
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    """Create JWT access token"""
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+async def get_user_by_email(db, email: str):
+    """Get user by email from database"""
+    try:
+        user = await db[USERS_COLLECTION_NAME].find_one({"email": email})
+        if user:
+            user["_id"] = str(user["_id"])
+        return user
+    except Exception:
+        return None
+
+async def authenticate_user(db, email: str, password: str):
+    """Authenticate user with email and password"""
+    user = await get_user_by_email(db, email)
+    if not user:
+        return False
+    if not verify_password(password, user["hashed_password"]):
+        return False
+    return user
+
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db = Depends(lambda: database)
+):
+    """Get current user from JWT token"""
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    
+    try:
+        payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
+        email: str = payload.get("sub")
+        if email is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+    
+    user = await get_user_by_email(db, email)
+    if user is None:
+        raise credentials_exception
+    
+    return user
+
+async def get_current_active_user(current_user: dict = Depends(get_current_user)):
+    """Get current active user"""
+    if not current_user.get("is_active", True):
+        raise HTTPException(status_code=400, detail="Inactive user")
+    return current_user
+
+def require_role(allowed_roles: List[str]):
+    """Role-based access control decorator"""
+    def role_checker(current_user: dict = Depends(get_current_active_user)):
+        if current_user.get("role") not in allowed_roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not enough permissions"
+            )
+        return current_user
+    return role_checker
 
 # Pydantic Models
 class InsuranceInfo(BaseModel):
@@ -213,6 +309,38 @@ class PrescriptionResponse(PrescriptionBase):
 
 class PrescriptionStatusUpdate(BaseModel):
     status: Literal["draft", "issued", "dispensed", "canceled"]
+# Authentication Models
+class UserRole:
+    PATIENT = "patient"
+    DOCTOR = "doctor"
+    RECEPTIONIST = "receptionist"
+
+class UserBase(BaseModel):
+    email: EmailStr
+    full_name: str
+    role: str = Field(..., description="User role: patient, doctor, or receptionist")
+    is_active: bool = True
+
+class UserCreate(UserBase):
+    password: str = Field(..., min_length=6, description="Password must be at least 6 characters")
+
+class UserResponse(UserBase):
+    id: str = Field(alias="_id")
+    created_at: datetime
+    updated_at: datetime
+    
+    model_config = {"populate_by_name": True}
+
+class UserLogin(BaseModel):
+    email: EmailStr
+    password: str
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+class TokenData(BaseModel):
+    email: Optional[str] = None
 
 # FastAPI App
 app = FastAPI(
@@ -238,10 +366,17 @@ async def startup_event():
     database = mongo_client[DATABASE_NAME]
     
     # Create indexes for better performance
+    # Patients collection indexes
     await database[COLLECTION_NAME].create_indexes([
         IndexModel([("email", ASCENDING)], unique=True),
         IndexModel([("phone", ASCENDING)], unique=True),
         IndexModel([("full_name", ASCENDING)]),
+    ])
+    
+    # Users collection indexes
+    await database[USERS_COLLECTION_NAME].create_indexes([
+        IndexModel([("email", ASCENDING)], unique=True),
+        IndexModel([("role", ASCENDING)]),
     ])
 
     # Create indexes for Drug catalog
@@ -493,12 +628,78 @@ async def health_check():
     """Health check endpoint"""
     return {"status": "healthy", "service": "patient-service"}
 
+# Authentication Endpoints
+
+@app.post("/api/v1/auth/register", response_model=UserResponse)
+async def register(user: UserCreate, db = Depends(get_db)):
+    """Register a new user"""
+    # Check if user already exists
+    existing_user = await get_user_by_email(db, user.email)
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already registered"
+        )
+    
+    # Validate role
+    if user.role not in [UserRole.PATIENT, UserRole.DOCTOR, UserRole.RECEPTIONIST]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid role. Must be: patient, doctor, or receptionist"
+        )
+    
+    # Create user document
+    user_data = {
+        "email": user.email,
+        "full_name": user.full_name,
+        "role": user.role,
+        "is_active": user.is_active,
+        "hashed_password": get_password_hash(user.password),
+        "created_at": datetime.utcnow(),
+        "updated_at": datetime.utcnow()
+    }
+    
+    try:
+        result = await db[USERS_COLLECTION_NAME].insert_one(user_data)
+        user_data["_id"] = str(result.inserted_id)
+        return UserResponse(**user_data)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create user"
+        )
+
+@app.post("/api/v1/auth/login", response_model=Token)
+async def login(user_credentials: UserLogin, db = Depends(get_db)):
+    """Login user and return JWT token"""
+    user = await authenticate_user(db, user_credentials.email, user_credentials.password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user["email"]}, expires_delta=access_token_expires
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
+
+@app.get("/api/v1/auth/me", response_model=UserResponse)
+async def read_users_me(current_user: dict = Depends(get_current_active_user)):
+    """Get current user information"""
+    return UserResponse(**current_user)
+
+# Patient Endpoints (Protected)
+
 @app.post("/api/v1/patients", response_model=PatientResponse)
 async def create_patient_endpoint(
     patient: PatientCreate, 
-    db = Depends(get_db)
+    db = Depends(get_db),
+    current_user: dict = Depends(require_role([UserRole.RECEPTIONIST, UserRole.DOCTOR]))
 ):
-    """Create a new patient"""
+    """Create a new patient (Receptionist and Doctor only)"""
     try:
         return await create_patient(db, patient)
     except HTTPException:
@@ -513,9 +714,10 @@ async def get_patients_endpoint(
     name: Optional[str] = Query(None, description="Filter by patient name"),
     phone: Optional[str] = Query(None, description="Filter by phone number"),
     email: Optional[str] = Query(None, description="Filter by email"),
-    db = Depends(get_db)
+    db = Depends(get_db),
+    current_user: dict = Depends(require_role([UserRole.RECEPTIONIST, UserRole.DOCTOR]))
 ):
-    """Get patients with optional filters"""
+    """Get patients with optional filters (Receptionist and Doctor only)"""
     try:
         return await get_patients(db, skip, limit, name, phone, email)
     except Exception as e:
@@ -524,9 +726,10 @@ async def get_patients_endpoint(
 @app.get("/api/v1/patients/{patient_id}", response_model=PatientResponse)
 async def get_patient_endpoint(
     patient_id: str, 
-    db = Depends(get_db)
+    db = Depends(get_db),
+    current_user: dict = Depends(get_current_active_user)
 ):
-    """Get a specific patient by ID"""
+    """Get a specific patient by ID (All authenticated users can view)"""
     patient = await get_patient_by_id(db, patient_id)
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
@@ -536,9 +739,10 @@ async def get_patient_endpoint(
 async def update_patient_endpoint(
     patient_id: str,
     patient_update: PatientUpdate,
-    db = Depends(get_db)
+    db = Depends(get_db),
+    current_user: dict = Depends(require_role([UserRole.RECEPTIONIST, UserRole.DOCTOR]))
 ):
-    """Update a patient"""
+    """Update a patient (Receptionist and Doctor only)"""
     try:
         updated_patient = await update_patient(db, patient_id, patient_update)
         if not updated_patient:
@@ -552,9 +756,10 @@ async def update_patient_endpoint(
 @app.delete("/api/v1/patients/{patient_id}")
 async def delete_patient_endpoint(
     patient_id: str, 
-    db = Depends(get_db)
+    db = Depends(get_db),
+    current_user: dict = Depends(require_role([UserRole.RECEPTIONIST]))
 ):
-    """Delete a patient"""
+    """Delete a patient (Receptionist only)"""
     try:
         if await delete_patient(db, patient_id):
             return {"message": "Patient deleted successfully"}
@@ -570,9 +775,10 @@ async def get_patients_count_endpoint(
     name: Optional[str] = Query(None),
     phone: Optional[str] = Query(None),
     email: Optional[str] = Query(None),
-    db = Depends(get_db)
+    db = Depends(get_db),
+    current_user: dict = Depends(require_role([UserRole.RECEPTIONIST, UserRole.DOCTOR]))
 ):
-    """Get total count of patients matching filters"""
+    """Get total count of patients matching filters (Receptionist and Doctor only)"""
     try:
         count = await get_patients_count(db, name, phone, email)
         return {"total": count}
@@ -583,9 +789,10 @@ async def get_patients_count_endpoint(
 async def validate_patient_insurance(
     patient_id: str,
     request: InsuranceValidationRequest,
-    db = Depends(get_db)
+    db = Depends(get_db),
+    current_user: dict = Depends(require_role([UserRole.RECEPTIONIST, UserRole.DOCTOR]))
 ):
-    """Validate patient's insurance card with Insurance Service"""
+    """Validate patient's insurance card with Insurance Service (Receptionist and Doctor only)"""
     try:
         # Get patient info
         patient = await get_patient_by_id(db, patient_id)
