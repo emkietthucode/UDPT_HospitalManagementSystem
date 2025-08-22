@@ -11,15 +11,19 @@ import os
 import re
 import random
 from dotenv import load_dotenv
+from urllib.parse import urlparse
 
 # Load environment variables
 load_dotenv()
 
 # MongoDB Configuration
 MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://localhost:27017/hospital_management")
-# Extract database name from MONGODB_URL
-DATABASE_NAME = MONGODB_URL.split('/')[-1] if '/' in MONGODB_URL else "insurance_service_db"
+# Extract database name from MONGODB_URL (handle query string)
+_parsed = urlparse(MONGODB_URL)
+_db_path = _parsed.path.lstrip('/') if _parsed and _parsed.path else ""
+DATABASE_NAME = _db_path or "insurance_service_db"
 COLLECTION_NAME = "insurance_cards"
+MONGODB_TIMEOUT_MS = int(os.getenv("MONGODB_TIMEOUT_MS", "2000"))
 
 # Global variables for database
 mongo_client: AsyncIOMotorClient = None
@@ -44,19 +48,29 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup_event():
     global mongo_client, database
-    mongo_client = AsyncIOMotorClient(MONGODB_URL)
+    # Short server selection timeout to avoid blocking startup when MongoDB is down
+    mongo_client = AsyncIOMotorClient(MONGODB_URL, serverSelectionTimeoutMS=MONGODB_TIMEOUT_MS)
     database = mongo_client[DATABASE_NAME]
-    
-    # Create indexes
-    await database[COLLECTION_NAME].create_indexes([
-        IndexModel([("card_number", ASCENDING)], unique=True),
-        IndexModel([("full_name", ASCENDING)]),
-        IndexModel([("date_of_birth", ASCENDING)]),
-    ])
-    
-    # Insert sample data if collection is empty
-    if await database[COLLECTION_NAME].count_documents({}) == 0:
-        await insert_sample_data()
+
+    # Best-effort ping and index creation; do not block service startup
+    try:
+        await database.command({"ping": 1})
+    except Exception as e:
+        print(f"[startup] MongoDB ping failed: {e}. Service will start without DB ready.")
+
+    try:
+        # Create indexes
+        await database[COLLECTION_NAME].create_indexes([
+            IndexModel([("card_number", ASCENDING)], unique=True),
+            IndexModel([("full_name", ASCENDING)]),
+            IndexModel([("date_of_birth", ASCENDING)]),
+        ])
+
+        # Insert sample data if collection is empty
+        if await database[COLLECTION_NAME].count_documents({}) == 0:
+            await insert_sample_data()
+    except Exception as e:
+        print(f"[startup] Skipping index creation/sample data due to MongoDB error: {e}")
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -219,16 +233,19 @@ def is_card_expired(valid_to: datetime) -> bool:
     return valid_to.date() < date.today()
 
 def calculate_coverage(hospital_level: str, card_level: str) -> int:
-    """Calculate insurance coverage percentage"""
+    """Calculate insurance coverage percentage based on hospital level and card level"""
     coverage_matrix = {
         ("Hạng I", "Hạng I"): 100,
         ("Hạng I", "Hạng II"): 80,
         ("Hạng I", "Hạng III"): 60,
+        ("Hạng II", "Hạng I"): 100,
         ("Hạng II", "Hạng II"): 100,
         ("Hạng II", "Hạng III"): 80,
+        ("Hạng III", "Hạng I"): 100,
+        ("Hạng III", "Hạng II"): 100,
         ("Hạng III", "Hạng III"): 100,
     }
-    return coverage_matrix.get((card_level, hospital_level), 60)
+    return coverage_matrix.get((hospital_level, card_level), 60)
 
 # API Routes
 @app.get("/")
@@ -298,7 +315,8 @@ async def validate_insurance_card(request: InsuranceValidationRequest):
     card_info["valid_to"] = card_info["valid_to"].date() if isinstance(card_info["valid_to"], datetime) else card_info["valid_to"]
     
     insurance_card = InsuranceCard(**card_info)
-    coverage = calculate_coverage(card_doc["hospital_level"], "Hạng I")  # Assume our hospital is level I
+    # Assume our hospital is level I
+    coverage = calculate_coverage("Hạng I", card_doc.get("hospital_level", "Hạng I"))
     
     return InsuranceValidationResponse(
         is_valid=True,

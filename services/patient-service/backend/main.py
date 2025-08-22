@@ -1,16 +1,17 @@
-from fastapi import FastAPI, HTTPException, Depends, Query, status
+from fastapi import FastAPI, HTTPException, Depends, Query, status, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import IndexModel, ASCENDING
 from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, List, Literal
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from bson import ObjectId
 import uvicorn
 import os
 import httpx
 from dotenv import load_dotenv
+from urllib.parse import urlparse
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 import secrets
@@ -20,13 +21,18 @@ load_dotenv()
 
 # MongoDB Configuration
 MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://localhost:27017/hospital_management")
-DATABASE_NAME = "hospital_management"
+# Extract database name from URL if present, fallback to default
+_parsed = urlparse(MONGODB_URL)
+_db_path = _parsed.path.lstrip('/') if _parsed and _parsed.path else ""
+DATABASE_NAME = _db_path or "hospital_management"
 COLLECTION_NAME = "patients"
 USERS_COLLECTION_NAME = "users"
 
-# New collections for drug catalog and prescriptions
+# New collections for drug catalog, prescriptions, and CLS
 DRUGS_COLLECTION = "drugs"
 PRESCRIPTIONS_COLLECTION = "prescriptions"
+CLS_ORDERS_COLLECTION = "service_orders"
+CLS_RESULTS_COLLECTION = "service_results"
 
 # Insurance Service Configuration
 INSURANCE_SERVICE_URL = os.getenv("INSURANCE_SERVICE_URL", "http://127.0.0.1:8002")
@@ -309,11 +315,69 @@ class PrescriptionResponse(PrescriptionBase):
 
 class PrescriptionStatusUpdate(BaseModel):
     status: Literal["draft", "issued", "dispensed", "canceled"]
+
+# --------------------------------------
+# CLS (Cận lâm sàng) Models
+# --------------------------------------
+
+class ServiceOrderItem(BaseModel):
+    service_code: str = Field(..., description="Mã dịch vụ CLS, ví dụ: XQ-01, CT-HEAD")
+    service_name: str = Field(..., description="Tên dịch vụ, ví dụ: X-quang phổi")
+    notes: Optional[str] = Field(None, description="Ghi chú chỉ định")
+
+class ServiceOrderCreate(BaseModel):
+    patient_id: str = Field(..., description="ID bệnh nhân")
+    doctor_id: str = Field(..., description="ID bác sĩ")
+    order_date: Optional[datetime] = Field(default_factory=lambda: datetime.utcnow())
+    priority: Optional[Literal["normal", "urgent"]] = Field(default="normal")
+    items: List[ServiceOrderItem] = Field(default_factory=list)
+    status: Literal["ordered", "in_progress", "completed", "canceled"] = Field(default="ordered")
+    notes: Optional[str] = None
+
+class ServiceOrderUpdate(BaseModel):
+    priority: Optional[Literal["normal", "urgent"]] = None
+    items: Optional[List[ServiceOrderItem]] = None
+    status: Optional[Literal["ordered", "in_progress", "completed", "canceled"]] = None
+    notes: Optional[str] = None
+
+class ServiceOrderResponse(ServiceOrderCreate):
+    id: str = Field(alias="_id")
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"populate_by_name": True}
+
+class ServiceResultText(BaseModel):
+    parameter: str = Field(..., description="Tên chỉ số: Hb, WBC, ...")
+    value: str = Field(..., description="Giá trị")
+    unit: Optional[str] = Field(None, description="Đơn vị")
+    reference_range: Optional[str] = Field(None, description="Khoảng tham chiếu")
+
+class ServiceResultCreate(BaseModel):
+    order_id: str = Field(..., description="ID phiếu chỉ định (ServiceOrder)")
+    result_date: Optional[datetime] = Field(default_factory=lambda: datetime.utcnow())
+    modality: Optional[str] = Field(None, description="Loại máy/phương pháp: X-ray, CT, MRI, Lab")
+    text_results: List[ServiceResultText] = Field(default_factory=list, description="Các chỉ số dạng text")
+    attachments: Optional[List[str]] = Field(default_factory=list, description="Danh sách URL file (mở rộng)")
+    conclusion: Optional[str] = Field(None, description="Kết luận")
+
+class ServiceResultUpdate(BaseModel):
+    text_results: Optional[List[ServiceResultText]] = None
+    attachments: Optional[List[str]] = None
+    conclusion: Optional[str] = None
+
+class ServiceResultResponse(ServiceResultCreate):
+    id: str = Field(alias="_id")
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"populate_by_name": True}
 # Authentication Models
 class UserRole:
     PATIENT = "patient"
     DOCTOR = "doctor"
     RECEPTIONIST = "receptionist"
+    TECHNICIAN = "technician"
 
 class UserBase(BaseModel):
     email: EmailStr
@@ -362,37 +426,62 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup_event():
     global mongo_client, database
-    mongo_client = AsyncIOMotorClient(MONGODB_URL)
+    # Set a short timeout to avoid hanging the service if MongoDB is down
+    timeout_ms = int(os.getenv("MONGODB_TIMEOUT_MS", "2000"))
+    mongo_client = AsyncIOMotorClient(MONGODB_URL, serverSelectionTimeoutMS=timeout_ms)
     database = mongo_client[DATABASE_NAME]
-    
-    # Create indexes for better performance
-    # Patients collection indexes
-    await database[COLLECTION_NAME].create_indexes([
-        IndexModel([("email", ASCENDING)], unique=True),
-        IndexModel([("phone", ASCENDING)], unique=True),
-        IndexModel([("full_name", ASCENDING)]),
-    ])
-    
-    # Users collection indexes
-    await database[USERS_COLLECTION_NAME].create_indexes([
-        IndexModel([("email", ASCENDING)], unique=True),
-        IndexModel([("role", ASCENDING)]),
-    ])
 
-    # Create indexes for Drug catalog
-    await database[DRUGS_COLLECTION].create_indexes([
-        IndexModel([("drug_code", ASCENDING)], unique=True),
-        IndexModel([("drug_name", ASCENDING)]),
-        IndexModel([("is_active", ASCENDING)])
-    ])
+    # Try ping to ensure connection is available; do not block startup if unavailable
+    try:
+        await database.command({"ping": 1})
+    except Exception as e:
+        print(f"[startup] MongoDB ping failed: {e}. Service will start and retry on demand.")
 
-    # Create indexes for Prescriptions
-    await database[PRESCRIPTIONS_COLLECTION].create_indexes([
-        IndexModel([("patient_id", ASCENDING)]),
-        IndexModel([("doctor_id", ASCENDING)]),
-        IndexModel([("prescribed_date", ASCENDING)]),
-        IndexModel([("status", ASCENDING)])
-    ])
+    # Best-effort index creation; do not fail startup if Mongo is not reachable
+    try:
+        # Patients collection indexes
+        await database[COLLECTION_NAME].create_indexes([
+            IndexModel([("email", ASCENDING)], unique=True),
+            IndexModel([("phone", ASCENDING)], unique=True),
+            IndexModel([("full_name", ASCENDING)]),
+        ])
+
+        # Users collection indexes
+        await database[USERS_COLLECTION_NAME].create_indexes([
+            IndexModel([("email", ASCENDING)], unique=True),
+            IndexModel([("role", ASCENDING)]),
+        ])
+
+        # Drug catalog indexes
+        await database[DRUGS_COLLECTION].create_indexes([
+            IndexModel([("drug_code", ASCENDING)], unique=True),
+            IndexModel([("drug_name", ASCENDING)]),
+            IndexModel([("is_active", ASCENDING)])
+        ])
+
+        # Prescriptions indexes
+        await database[PRESCRIPTIONS_COLLECTION].create_indexes([
+            IndexModel([("patient_id", ASCENDING)]),
+            IndexModel([("doctor_id", ASCENDING)]),
+            IndexModel([("prescribed_date", ASCENDING)]),
+            IndexModel([("status", ASCENDING)])
+        ])
+
+        # CLS: Service Orders indexes
+        await database[CLS_ORDERS_COLLECTION].create_indexes([
+            IndexModel([("patient_id", ASCENDING)]),
+            IndexModel([("doctor_id", ASCENDING)]),
+            IndexModel([("order_date", ASCENDING)]),
+            IndexModel([("status", ASCENDING)]),
+        ])
+
+        # CLS: Service Results indexes
+        await database[CLS_RESULTS_COLLECTION].create_indexes([
+            IndexModel([("order_id", ASCENDING)]),
+            IndexModel([("result_date", ASCENDING)]),
+        ])
+    except Exception as e:
+        print(f"[startup] Index creation skipped due to MongoDB error: {e}")
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -621,12 +710,28 @@ def serialize_prescription(doc: dict) -> dict:
     result["items"] = items
     return result
 
+# Helper to serialize drug documents
+def serialize_drug(doc: dict) -> dict:
+    result = doc.copy()
+    if isinstance(result.get("_id"), ObjectId):
+        result["_id"] = str(result["_id"])
+    return result
+
 # API Endpoints
 
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
     return {"status": "healthy", "service": "patient-service"}
+
+@app.get("/db/health")
+async def db_health_check():
+    """Check MongoDB connectivity and database name"""
+    try:
+        await database.command({"ping": 1})
+        return {"ok": True, "database": DATABASE_NAME}
+    except Exception as e:
+        return {"ok": False, "database": DATABASE_NAME, "error": str(e)}
 
 # Authentication Endpoints
 
@@ -642,7 +747,7 @@ async def register(user: UserCreate, db = Depends(get_db)):
         )
     
     # Validate role
-    if user.role not in [UserRole.PATIENT, UserRole.DOCTOR, UserRole.RECEPTIONIST]:
+    if user.role not in [UserRole.PATIENT, UserRole.DOCTOR, UserRole.RECEPTIONIST, UserRole.TECHNICIAN]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid role. Must be: patient, doctor, or receptionist"
@@ -1012,6 +1117,374 @@ async def update_prescription_status(
 
     updated = await db[PRESCRIPTIONS_COLLECTION].find_one({"_id": oid})
     return serialize_prescription(updated)
+
+# -----------------------------
+# Drug CRUD Endpoints
+# -----------------------------
+
+@app.get("/api/v1/drugs")
+async def list_drugs(
+    name: Optional[str] = Query(None, description="Lọc theo tên thuốc"),
+    code: Optional[str] = Query(None, description="Lọc theo mã thuốc"),
+    active: Optional[bool] = Query(None, description="Lọc trạng thái hoạt động"),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    db = Depends(get_db),
+    current_user: dict = Depends(require_role([UserRole.RECEPTIONIST, UserRole.DOCTOR]))
+):
+    query: dict = {}
+    if name:
+        query["drug_name"] = {"$regex": name, "$options": "i"}
+    if code:
+        query["drug_code"] = {"$regex": code, "$options": "i"}
+    if active is not None:
+        query["is_active"] = active
+
+    cursor = db[DRUGS_COLLECTION].find(query).sort("drug_name", 1).skip(skip).limit(limit)
+    results: List[dict] = []
+    async for doc in cursor:
+        results.append(serialize_drug(doc))
+    return results
+
+@app.get("/api/v1/drugs/{drug_id}")
+async def get_drug(drug_id: str, db = Depends(get_db), current_user: dict = Depends(get_current_active_user)):
+    oid = try_parse_object_id(drug_id)
+    if oid is None:
+        raise HTTPException(status_code=400, detail="Invalid drug id")
+    doc = await db[DRUGS_COLLECTION].find_one({"_id": oid})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Drug not found")
+    return serialize_drug(doc)
+
+@app.post("/api/v1/drugs")
+async def create_drug(body: DrugCreate, db = Depends(get_db), current_user: dict = Depends(require_role([UserRole.RECEPTIONIST, UserRole.DOCTOR]))):
+    exists = await db[DRUGS_COLLECTION].find_one({"drug_code": body.drug_code})
+    if exists:
+        raise HTTPException(status_code=400, detail="Drug code already exists")
+    now = datetime.utcnow()
+    doc = body.model_dump()
+    doc["created_at"], doc["updated_at"] = now, now
+    result = await db[DRUGS_COLLECTION].insert_one(doc)
+    created = await db[DRUGS_COLLECTION].find_one({"_id": result.inserted_id})
+    return serialize_drug(created)
+
+@app.put("/api/v1/drugs/{drug_id}")
+async def update_drug(drug_id: str, body: DrugUpdate, db = Depends(get_db), current_user: dict = Depends(require_role([UserRole.RECEPTIONIST, UserRole.DOCTOR]))):
+    oid = try_parse_object_id(drug_id)
+    if oid is None:
+        raise HTTPException(status_code=400, detail="Invalid drug id")
+    update_data = body.model_dump(exclude_unset=True)
+    if not update_data:
+        doc = await db[DRUGS_COLLECTION].find_one({"_id": oid})
+        if not doc:
+            raise HTTPException(status_code=404, detail="Drug not found")
+        return serialize_drug(doc)
+    if "drug_code" in update_data:
+        conflict = await db[DRUGS_COLLECTION].find_one({"drug_code": update_data["drug_code"], "_id": {"$ne": oid}})
+        if conflict:
+            raise HTTPException(status_code=400, detail="Drug code already exists")
+    update_data["updated_at"] = datetime.utcnow()
+    await db[DRUGS_COLLECTION].update_one({"_id": oid}, {"$set": update_data})
+    updated = await db[DRUGS_COLLECTION].find_one({"_id": oid})
+    if not updated:
+        raise HTTPException(status_code=404, detail="Drug not found")
+    return serialize_drug(updated)
+
+# --------------------------------------
+# CLS Endpoints
+# --------------------------------------
+
+def serialize_order(doc: dict) -> dict:
+    r = doc.copy()
+    if isinstance(r.get("_id"), ObjectId):
+        r["_id"] = str(r["_id"])
+    if isinstance(r.get("patient_id"), ObjectId):
+        r["patient_id"] = str(r["patient_id"])
+    return r
+
+def serialize_result(doc: dict) -> dict:
+    r = doc.copy()
+    if isinstance(r.get("_id"), ObjectId):
+        r["_id"] = str(r["_id"])
+    if isinstance(r.get("order_id"), ObjectId):
+        r["order_id"] = str(r["order_id"])
+    return r
+
+@app.post("/api/v1/cls/orders", response_model=ServiceOrderResponse)
+async def create_service_order(order: ServiceOrderCreate, db = Depends(get_db), current_user: dict = Depends(require_role([UserRole.DOCTOR]))):
+    # Ensure patient exists
+    patient = await get_patient_by_id(db, order.patient_id)
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+
+    now = datetime.utcnow()
+    doc = order.model_dump()
+    doc["patient_id"] = ObjectId(order.patient_id)
+    doc["created_at"] = now
+    doc["updated_at"] = now
+    result = await db[CLS_ORDERS_COLLECTION].insert_one(doc)
+    created = await db[CLS_ORDERS_COLLECTION].find_one({"_id": result.inserted_id})
+    return serialize_order(created)
+
+@app.get("/api/v1/cls/orders", response_model=List[ServiceOrderResponse])
+async def list_service_orders(
+    patient_id: Optional[str] = Query(None),
+    doctor_id: Optional[str] = Query(None),
+    status: Optional[Literal["ordered", "in_progress", "completed", "canceled"]] = Query(None),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    db = Depends(get_db),
+    current_user: dict = Depends(get_current_active_user)
+):
+    query: dict = {}
+    if patient_id:
+        oid = try_parse_object_id(patient_id)
+        if oid is None:
+            raise HTTPException(status_code=400, detail="Invalid patient_id")
+        query["patient_id"] = oid
+    if doctor_id:
+        query["doctor_id"] = doctor_id
+    if status:
+        query["status"] = status
+    cursor = db[CLS_ORDERS_COLLECTION].find(query).sort("order_date", -1).skip(skip).limit(limit)
+    results: List[dict] = []
+    async for doc in cursor:
+        results.append(serialize_order(doc))
+    return results
+
+@app.put("/api/v1/cls/orders/{order_id}", response_model=ServiceOrderResponse)
+async def update_service_order(order_id: str, body: ServiceOrderUpdate, db = Depends(get_db), current_user: dict = Depends(require_role([UserRole.DOCTOR]))):
+    oid = try_parse_object_id(order_id)
+    if oid is None:
+        raise HTTPException(status_code=400, detail="Invalid order id")
+    data = body.model_dump(exclude_unset=True)
+    data["updated_at"] = datetime.utcnow()
+    await db[CLS_ORDERS_COLLECTION].update_one({"_id": oid}, {"$set": data})
+    updated = await db[CLS_ORDERS_COLLECTION].find_one({"_id": oid})
+    if not updated:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return serialize_order(updated)
+
+@app.post("/api/v1/cls/results", response_model=ServiceResultResponse)
+async def create_service_result(result: ServiceResultCreate, db = Depends(get_db), current_user: dict = Depends(require_role([UserRole.DOCTOR]))):
+    oid = try_parse_object_id(result.order_id)
+    if oid is None:
+        raise HTTPException(status_code=400, detail="Invalid order id")
+    order = await db[CLS_ORDERS_COLLECTION].find_one({"_id": oid})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    now = datetime.utcnow()
+    doc = result.model_dump()
+    doc["order_id"] = oid
+    doc["created_at"], doc["updated_at"] = now, now
+    ins = await db[CLS_RESULTS_COLLECTION].insert_one(doc)
+    created = await db[CLS_RESULTS_COLLECTION].find_one({"_id": ins.inserted_id})
+    # Auto mark order completed if not already
+    await db[CLS_ORDERS_COLLECTION].update_one({"_id": oid}, {"$set": {"status": "completed", "updated_at": datetime.utcnow()}})
+    return serialize_result(created)
+
+@app.get("/api/v1/cls/results", response_model=List[ServiceResultResponse])
+async def list_service_results(order_id: Optional[str] = Query(None), patient_id: Optional[str] = Query(None), db = Depends(get_db), current_user: dict = Depends(get_current_active_user)):
+    query: dict = {}
+    if order_id:
+        oid = try_parse_object_id(order_id)
+        if oid is None:
+            raise HTTPException(status_code=400, detail="Invalid order id")
+        query["order_id"] = oid
+    if patient_id:
+        poid = try_parse_object_id(patient_id)
+        if poid is None:
+            raise HTTPException(status_code=400, detail="Invalid patient id")
+        # Join-like by first finding orders
+        order_ids: List[ObjectId] = []
+        cursor = db[CLS_ORDERS_COLLECTION].find({"patient_id": poid}, {"_id": 1})
+        async for o in cursor:
+            order_ids.append(o["_id"])
+        if not order_ids:
+            return []
+        query["order_id"] = {"$in": order_ids}
+    cursor = db[CLS_RESULTS_COLLECTION].find(query).sort("result_date", -1)
+    results: List[dict] = []
+    async for doc in cursor:
+        results.append(serialize_result(doc))
+    return results
+
+# --------------------------------------
+# LAB Orders listing for technicians
+# --------------------------------------
+
+def _map_public_status_to_internal(status: str) -> Optional[str]:
+    mapping = {
+        "waiting": "ordered",
+        "in_progress": "in_progress",
+        "completed": "completed",
+    }
+    return mapping.get(status)
+
+def _build_test_type_filter(test_type: str) -> Optional[dict]:
+    # Heuristics by service_code or service_name
+    if test_type == "hematology":
+        regex = {"$regex": "^(LAB-)?(CBC|HEM|HB|WBC)|(huyet|huyết|CBC|bạch cầu|hồng cầu)", "$options": "i"}
+        return {"$or": [{"service_code": regex}, {"service_name": regex}]}
+    if test_type == "biochemistry":
+        regex = {"$regex": "^(LAB-)?(BIO|GLU|AST|ALT|CHO|UREA)|(sinh hoa|sinh hóa|glucose|AST|ALT)", "$options": "i"}
+        return {"$or": [{"service_code": regex}, {"service_name": regex}]}
+    if test_type == "imaging":
+        regex = {"$regex": "^(XQ|CT|MRI|USG)|(x-quang|chup|siêu âm|ct|mri)", "$options": "i"}
+        return {"$or": [{"service_code": regex}, {"service_name": regex}]}
+    return None
+
+@app.get("/lab/orders", response_model=List[ServiceOrderResponse])
+async def list_lab_orders(
+    date_from: Optional[str] = Query(None, description="YYYY-MM-DD hoặc ISO date"),
+    date_to: Optional[str] = Query(None, description="YYYY-MM-DD hoặc ISO date"),
+    status: Optional[Literal["waiting", "in_progress", "completed"]] = Query(None),
+    test_type: Optional[Literal["hematology", "biochemistry", "imaging"]] = Query(None),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    db = Depends(get_db),
+    current_user: dict = Depends(require_role([UserRole.TECHNICIAN, UserRole.DOCTOR]))
+):
+    query: dict = {}
+
+    # Date filters on order_date
+    def _parse_date(s: str) -> Optional[datetime]:
+        try:
+            # Try date-only first
+            return datetime.fromisoformat(s)
+        except Exception:
+            try:
+                return datetime.strptime(s, "%Y-%m-%d")
+            except Exception:
+                return None
+
+    if date_from:
+        df = _parse_date(date_from)
+        if df:
+            query.setdefault("order_date", {})["$gte"] = df
+        else:
+            raise HTTPException(status_code=400, detail="Invalid date_from format")
+    if date_to:
+        dt_ = _parse_date(date_to)
+        if dt_:
+            query.setdefault("order_date", {})["$lte"] = dt_
+        else:
+            raise HTTPException(status_code=400, detail="Invalid date_to format")
+
+    # Status mapping
+    if status:
+        internal = _map_public_status_to_internal(status)
+        if not internal:
+            raise HTTPException(status_code=400, detail="Invalid status")
+        query["status"] = internal
+
+    # Test type filter via $elemMatch on items
+    if test_type:
+        item_filter = _build_test_type_filter(test_type)
+        if not item_filter:
+            raise HTTPException(status_code=400, detail="Invalid test_type")
+        query["items"] = {"$elemMatch": item_filter}
+
+    cursor = db[CLS_ORDERS_COLLECTION].find(query).sort("order_date", -1).skip(skip).limit(limit)
+    results: List[dict] = []
+    async for doc in cursor:
+        results.append(serialize_order(doc))
+    return results
+
+@app.post("/lab/orders/{order_id}/results", response_model=ServiceResultResponse)
+async def upload_lab_results(
+    order_id: str,
+    modality: Optional[str] = Form(None),
+    conclusion: Optional[str] = Form(None),
+    text_results: Optional[str] = Form(None, description="JSON list of text results"),
+    files: Optional[List[UploadFile]] = File(None),
+    db = Depends(get_db),
+    current_user: dict = Depends(require_role([UserRole.TECHNICIAN, UserRole.DOCTOR]))
+):
+    oid = try_parse_object_id(order_id)
+    if oid is None:
+        raise HTTPException(status_code=400, detail="Invalid order id")
+
+    order = await db[CLS_ORDERS_COLLECTION].find_one({"_id": oid})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    # Parse text_results JSON if provided
+    parsed_text_results: List[dict] = []
+    if text_results:
+        try:
+            import json
+            data = json.loads(text_results)
+            if isinstance(data, list):
+                parsed_text_results = data
+            else:
+                raise ValueError("text_results must be a JSON array")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid text_results JSON: {e}")
+
+    # Save uploaded files
+    saved_paths: List[str] = []
+    if files:
+        upload_root = os.getenv("UPLOAD_ROOT", "uploads")
+        dest_dir = os.path.join(upload_root, "cls", str(order_id))
+        os.makedirs(dest_dir, exist_ok=True)
+
+        for f in files:
+            try:
+                original_name = f.filename or "file"
+                safe_name = original_name.replace("..", "").replace("/", "_").replace("\\", "_")
+                unique_name = f"{int(datetime.utcnow().timestamp()*1000)}_{safe_name}"
+                dest_path = os.path.join(dest_dir, unique_name)
+                with open(dest_path, "wb") as out:
+                    out.write(await f.read())
+                saved_paths.append(dest_path)
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed saving file {f.filename}: {e}")
+
+    now = datetime.utcnow()
+    existing = await db[CLS_RESULTS_COLLECTION].find_one({"order_id": oid})
+    if existing:
+        update_doc: dict = {"updated_at": now}
+        if modality is not None:
+            update_doc["modality"] = modality
+        if conclusion is not None:
+            update_doc["conclusion"] = conclusion
+        if parsed_text_results:
+            update_doc["text_results"] = parsed_text_results
+        if saved_paths:
+            await db[CLS_RESULTS_COLLECTION].update_one({"_id": existing["_id"]}, {"$push": {"attachments": {"$each": saved_paths}}})
+        await db[CLS_RESULTS_COLLECTION].update_one({"_id": existing["_id"]}, {"$set": update_doc})
+        updated = await db[CLS_RESULTS_COLLECTION].find_one({"_id": existing["_id"]})
+        # Mark order completed
+        await db[CLS_ORDERS_COLLECTION].update_one({"_id": oid}, {"$set": {"status": "completed", "updated_at": datetime.utcnow()}})
+        return serialize_result(updated)
+    else:
+        doc = {
+            "order_id": oid,
+            "result_date": now,
+            "modality": modality,
+            "text_results": parsed_text_results,
+            "attachments": saved_paths,
+            "conclusion": conclusion,
+            "created_at": now,
+            "updated_at": now,
+        }
+        ins = await db[CLS_RESULTS_COLLECTION].insert_one(doc)
+        created = await db[CLS_RESULTS_COLLECTION].find_one({"_id": ins.inserted_id})
+        await db[CLS_ORDERS_COLLECTION].update_one({"_id": oid}, {"$set": {"status": "completed", "updated_at": datetime.utcnow()}})
+        return serialize_result(created)
+@app.delete("/api/v1/drugs/{drug_id}")
+async def delete_drug(drug_id: str, db = Depends(get_db), current_user: dict = Depends(require_role([UserRole.RECEPTIONIST, UserRole.DOCTOR]))):
+    """Soft delete: set is_active = False"""
+    oid = try_parse_object_id(drug_id)
+    if oid is None:
+        raise HTTPException(status_code=400, detail="Invalid drug id")
+    result = await db[DRUGS_COLLECTION].update_one({"_id": oid}, {"$set": {"is_active": False, "updated_at": datetime.utcnow()}})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Drug not found")
+    updated = await db[DRUGS_COLLECTION].find_one({"_id": oid})
+    return serialize_drug(updated)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8001)
